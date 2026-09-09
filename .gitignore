@@ -1,0 +1,12 @@
+node_modules/
+profiles/
+stores.json
+.codex/
+.playwright-mcp/
+*.log
+.DS_Store
+MODIFIED_FILE
+DIFF_FILE
+VERIFICATION.txt
+ROLLBACK.sh
+.codex/
