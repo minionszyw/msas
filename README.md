@@ -1,6 +1,6 @@
 # JD Stealth Store API
 
-本地多店铺 Playwright-Stealth 自动化接口。每个店铺使用独立持久化 Chrome profile，默认有头模式。
+本地多店铺 Playwright-Stealth 自动化接口。每个店铺使用独立持久化 Chrome profile，默认有头模式。登录接口会先检查现有登录态；未登录时停留在登录页等待人工登录，成功后默认保留窗口 15 秒再关闭。
 
 ## 启动
 

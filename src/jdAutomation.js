@@ -169,29 +169,34 @@ function createAutomation(options = {}) {
     return publicJob(job);
   }
 
-  async function runLogin(storeId, timeoutMs = 10 * 60 * 1000) {
+  async function runLogin(storeId, timeoutMs = 10 * 60 * 1000, keepOpenMs = 15000) {
     const store = getStore(storeId);
     const context = await launchContext(store);
     const page = context.pages()[0] || await context.newPage();
     try {
-      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      const deadline = Date.now() + timeoutMs;
-      let lastUrl = page.url();
-      while (Date.now() < deadline) {
-        lastUrl = page.url();
-        if (lastUrl.startsWith(HOME_URL) || lastUrl.includes('shop.jd.com/jdm/home')) break;
-        try {
-          await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await page.waitForTimeout(2000);
-          lastUrl = page.url();
-          if (lastUrl.startsWith(HOME_URL) && !lastUrl.includes('passport.shop.jd.com')) break;
-        } catch (_) {}
+      let alreadyLoggedIn = false;
+      try {
+        await page.goto(WARE_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(3000);
+        alreadyLoggedIn = !page.url().includes('passport.shop.jd.com') && page.url().includes('wares-jdm.jd.com/ware/wareList');
+      } catch (_) {}
+
+      if (!alreadyLoggedIn) {
+        await page.goto(`${LOGIN_URL}?ReturnUrl=${encodeURIComponent(WARE_LIST_URL)}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
       }
+
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const currentUrl = page.url();
+        if (!currentUrl.includes('passport.shop.jd.com') && (currentUrl.includes('shop.jd.com/jdm/home') || currentUrl.includes('wares-jdm.jd.com/ware/wareList'))) break;
+        await page.waitForTimeout(2000);
+      }
+
       const title = await page.title().catch(() => '');
       const finalUrl = page.url();
-      const ok = finalUrl.startsWith(HOME_URL) && !finalUrl.includes('passport.shop.jd.com');
-      return { ok, title, finalUrl, profileDir: store.profileDir, timeoutMs };
+      const ok = !finalUrl.includes('passport.shop.jd.com') && (finalUrl.includes('shop.jd.com/jdm/home') || finalUrl.includes('wares-jdm.jd.com/ware/wareList'));
+      if (ok && keepOpenMs > 0) await page.waitForTimeout(keepOpenMs);
+      return { ok, title, finalUrl, profileDir: store.profileDir, timeoutMs, keepOpenMs, alreadyLoggedIn };
     } finally {
       await context.close().catch(() => {});
     }
@@ -280,8 +285,8 @@ function createAutomation(options = {}) {
 
   function startLogin(storeId, timeoutMs) {
     getStore(storeId);
-    const job = createJob(jobs, 'login', storeId, { timeoutMs: timeoutMs || 10 * 60 * 1000 });
-    return enqueue(job, () => runLogin(storeId, timeoutMs));
+    const job = createJob(jobs, 'login', storeId, { timeoutMs: timeoutMs || 10 * 60 * 1000, keepOpenMs: 15000 });
+    return enqueue(job, () => runLogin(storeId, timeoutMs, 15000));
   }
 
   function startQuery601(storeId) {
