@@ -174,29 +174,19 @@ function createAutomation(options = {}) {
     const context = await launchContext(store);
     const page = context.pages()[0] || await context.newPage();
     try {
-      let alreadyLoggedIn = false;
-      try {
-        await page.goto(WARE_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await page.waitForTimeout(3000);
-        alreadyLoggedIn = !page.url().includes('passport.shop.jd.com') && page.url().includes('wares-jdm.jd.com/ware/wareList');
-      } catch (_) {}
-
-      if (!alreadyLoggedIn) {
-        await page.goto(`${LOGIN_URL}?ReturnUrl=${encodeURIComponent(WARE_LIST_URL)}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      }
-
+      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
         const currentUrl = page.url();
-        if (!currentUrl.includes('passport.shop.jd.com') && (currentUrl.includes('shop.jd.com/jdm/home') || currentUrl.includes('wares-jdm.jd.com/ware/wareList'))) break;
+        if (currentUrl.startsWith(HOME_URL) || currentUrl.includes('shop.jd.com/jdm/home')) break;
         await page.waitForTimeout(2000);
       }
 
       const title = await page.title().catch(() => '');
       const finalUrl = page.url();
-      const ok = !finalUrl.includes('passport.shop.jd.com') && (finalUrl.includes('shop.jd.com/jdm/home') || finalUrl.includes('wares-jdm.jd.com/ware/wareList'));
+      const ok = finalUrl.startsWith(HOME_URL) || finalUrl.includes('shop.jd.com/jdm/home');
       if (ok && keepOpenMs > 0) await page.waitForTimeout(keepOpenMs);
-      return { ok, title, finalUrl, profileDir: store.profileDir, timeoutMs, keepOpenMs, alreadyLoggedIn };
+      return { ok, title, finalUrl, profileDir: store.profileDir, timeoutMs, keepOpenMs };
     } finally {
       await context.close().catch(() => {});
     }
