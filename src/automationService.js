@@ -94,9 +94,9 @@ function createAutomation(options = {}) {
   const storesFile = path.resolve(options.storesFile || path.join(rootDir, 'stores.json'));
   const jobs = new Map();
   const locks = new Map();
-  const adapters = new Map([
-    ['jd', createJdPlatform({ chromePath: options.chromePath, headed: options.headed })],
-  ]);
+  const adapters = options.adapters
+    ? new Map(Object.entries(options.adapters))
+    : new Map([['jd', createJdPlatform({ chromePath: options.chromePath, headed: options.headed })]]);
 
   ensureDir(profilesDir);
   const stores = normalizeStores(readJson(storesFile, {}), profilesDir);
@@ -125,20 +125,24 @@ function createAutomation(options = {}) {
     return stores[storeId];
   }
 
-  function getStore(platform, storeId) {
-    sanitizePlatform(platform);
+  function getStore(storeId, platform) {
     sanitizeStoreId(storeId);
+    if (platform) sanitizePlatform(platform);
     const store = stores[storeId];
-    if (!store || store.platform !== platform) {
-      throw makeError(`store ${storeId} not found for platform ${platform}`, 404, 'storeNotFound');
+    if (!store || (platform && store.platform !== platform)) {
+      const suffix = platform ? ` for platform ${platform}` : '';
+      throw makeError(`store ${storeId} not found${suffix}`, 404, 'storeNotFound');
     }
     ensureDir(store.profileDir);
     return store;
   }
 
   function listStores(platform) {
-    sanitizePlatform(platform);
-    return Object.values(stores).filter((store) => store.platform === platform);
+    if (platform) {
+      sanitizePlatform(platform);
+      return Object.values(stores).filter((store) => store.platform === platform);
+    }
+    return Object.values(stores);
   }
 
   function getExecutableAdapter(platform) {
@@ -176,19 +180,21 @@ function createAutomation(options = {}) {
     return publicJob(job);
   }
 
-  function startLogin(platform, storeId, payload = {}) {
-    const store = getStore(platform, storeId);
-    const adapter = getExecutableAdapter(platform);
+  function startLogin(storeId, payload = {}) {
+    const store = getStore(storeId);
+    const adapter = getExecutableAdapter(store.platform);
     const timeoutMs = payload.timeoutMs ? Number(payload.timeoutMs) : 10 * 60 * 1000;
-    const job = createJob(jobs, 'login', platform, storeId, { timeoutMs });
+    const job = createJob(jobs, 'login', store.platform, storeId, { timeoutMs });
     return enqueue(job, () => adapter.startLogin(store, { timeoutMs }));
   }
 
-  function startAction(platform, storeId, action, payload = {}) {
-    const store = getStore(platform, storeId);
-    const adapter = getExecutableAdapter(platform);
-    const job = createJob(jobs, action, platform, storeId, { action, ...payload });
-    return enqueue(job, () => adapter.startAction(action, store, payload));
+  function startAction(storeId, action, payload = {}) {
+    const store = getStore(storeId);
+    const adapter = getExecutableAdapter(store.platform);
+    const normalizedPayload = adapter.validateActionPayload ? adapter.validateActionPayload(action, payload) : payload;
+    const metadata = adapter.createActionMetadata ? adapter.createActionMetadata(action, normalizedPayload) : { action, ...normalizedPayload };
+    const job = createJob(jobs, action, store.platform, storeId, metadata);
+    return enqueue(job, () => adapter.startAction(action, store, normalizedPayload));
   }
 
   function getJob(jobId) {

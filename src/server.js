@@ -21,39 +21,38 @@ const platformSchema = z.enum(PLATFORMS);
 const storeSchema = z.object({
   storeId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
   name: z.string().min(1).max(128).optional(),
+  platform: platformSchema,
 });
-
-function parsePlatform(req) {
-  return platformSchema.parse(req.params.platform);
-}
 
 app.get('/health', (_req, res) => res.json({ ok: true, headed: process.env.HEADLESS !== '1', platforms: PLATFORMS }));
 
-app.get('/platforms/:platform/stores', (req, res, next) => {
-  try { res.json({ stores: automation.listStores(parsePlatform(req)) }); } catch (err) { next(err); }
+app.get('/stores', (req, res, next) => {
+  try {
+    const platform = req.query.platform ? platformSchema.parse(req.query.platform) : undefined;
+    res.json({ stores: automation.listStores(platform) });
+  } catch (err) { next(err); }
 });
 
-app.post('/platforms/:platform/stores', (req, res, next) => {
+app.post('/stores', (req, res, next) => {
   try {
-    const platform = parsePlatform(req);
     const body = storeSchema.parse(req.body);
-    res.status(201).json({ store: automation.ensureStore(platform, body.storeId, body.name || body.storeId) });
+    res.status(201).json({ store: automation.ensureStore(body.platform, body.storeId, body.name || body.storeId) });
   } catch (err) { next(err); }
 });
 
-app.get('/platforms/:platform/stores/:storeId', (req, res, next) => {
-  try { res.json({ store: automation.getStore(parsePlatform(req), req.params.storeId) }); } catch (err) { next(err); }
+app.get('/stores/:storeId', (req, res, next) => {
+  try { res.json({ store: automation.getStore(req.params.storeId) }); } catch (err) { next(err); }
 });
 
-app.post('/platforms/:platform/stores/:storeId/login/start', (req, res, next) => {
+app.post('/stores/:storeId/login/start', (req, res, next) => {
   try {
-    res.status(202).json({ job: automation.startLogin(parsePlatform(req), req.params.storeId, req.body || {}) });
+    res.status(202).json({ job: automation.startLogin(req.params.storeId, req.body || {}) });
   } catch (err) { next(err); }
 });
 
-app.post('/platforms/:platform/stores/:storeId/actions/:action/start', (req, res, next) => {
+app.post('/stores/:storeId/actions/:action/start', (req, res, next) => {
   try {
-    res.status(202).json({ job: automation.startAction(parsePlatform(req), req.params.storeId, req.params.action, req.body || {}) });
+    res.status(202).json({ job: automation.startAction(req.params.storeId, req.params.action, req.body || {}) });
   } catch (err) { next(err); }
 });
 

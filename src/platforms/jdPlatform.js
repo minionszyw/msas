@@ -10,7 +10,6 @@ const ALL_WARE_SELECTOR = '#tab-AllWare > div > span';
 const QUERY_BUTTON_SELECTOR = '#app > div > div:nth-child(3) > form > div > div > div.jd-form-item.asterisk-left.actions-form-item > div.jd-form-item__content > div > button.jd-button.jd-button--primary.is-plain';
 const QUERY_API_NAME = 'dsm.product.manage.ProductInfoReadViewService.queryValidProductList';
 const QUERY_API_URL_PART = `api=${QUERY_API_NAME}`;
-const TEST_PRODUCT_ID_TEXT = '10028128548417';
 const DEFAULT_CHROME_PATH = process.env.CHROME_PATH || '/opt/google/chrome/chrome';
 const DEFAULT_VIEWPORT = { width: 1365, height: 900 };
 
@@ -91,21 +90,21 @@ function createJdPlatform(options = {}) {
     }
   }
 
-  async function fillProductCode(page) {
+  async function fillProductCode(page, spuid) {
     const formItems = page.locator('form .jd-form-item');
     await formItems.filter({ hasText: '查询设置' }).getByRole('button', { name: '重置' }).click().catch(() => {});
     await page.waitForTimeout(1000);
     const productCodeInput = formItems.nth(3).locator('input').first();
     await productCodeInput.click({ timeout: 15000 });
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
-    await page.keyboard.type(TEST_PRODUCT_ID_TEXT);
+    await page.keyboard.type(spuid);
     await productCodeInput.evaluate((el) => {
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     });
   }
 
-  function summarize(records, bodyText) {
+  function summarize(records, bodyText, spuid) {
     const queryResponses = records.filter((r) => r.event === 'response' && r.url.includes(QUERY_API_URL_PART));
     const http601Count = records.filter((r) => String(r.status) === '601').length;
     const json601Count = records.filter((r) => /"code"\s*:\s*601/.test(r.body || '')).length;
@@ -113,14 +112,15 @@ function createJdPlatform(options = {}) {
     const bodyBadText = /未经京东授权|网络环境较差|601/.test(bodyText || '');
     const querySummaries = queryResponses.map((r) => {
       const json = parseJsonMaybe(r.body || '');
-      return { httpStatus: r.status, jsonCode: json && json.code, msg: json && json.msg, hasTestProductId: (r.body || '').includes(TEST_PRODUCT_ID_TEXT) };
+      return { httpStatus: r.status, jsonCode: json && json.code, msg: json && json.msg, hasSpuid: (r.body || '').includes(spuid) };
     });
     const queryOk = querySummaries.some((r) => r.httpStatus === 200 && Number(r.jsonCode) === 200);
     const hit601 = http601Count > 0 || json601Count > 0 || badTextCount > 0 || bodyBadText || queryResponses.some((r) => responseHas601(r.status, r.body));
     return { hit601, ok: queryOk && !hit601, http601Count, json601Count, badTextCount, bodyBadText, queryResponseCount: queryResponses.length, queryResponses: querySummaries };
   }
 
-  async function runQuery601(store) {
+  async function runQuery601(store, payload) {
+    const { spuid } = validateQuery601Payload(payload);
     const records = [];
     const phaseRef = { value: 'open' };
     const context = await launchContext(store);
@@ -135,29 +135,54 @@ function createJdPlatform(options = {}) {
       await page.locator(ALL_WARE_SELECTOR).click({ timeout: 15000 }).catch(() => {});
       await page.waitForTimeout(3000);
       phaseRef.value = 'query-product-code';
-      await fillProductCode(page);
+      await fillProductCode(page, spuid);
       await clickQueryButton(page);
       await page.waitForTimeout(8000);
       const bodyText = await page.locator('body').innerText().catch(() => '');
       const title = await page.title().catch(() => '');
       const finalUrl = page.url();
-      return { ...summarize(records, bodyText), loginRequired: false, finalUrl, title, recordsCount: records.length };
+      return { ...summarize(records, bodyText, spuid), spuid, loginRequired: false, finalUrl, title, recordsCount: records.length };
     } finally {
       await context.close().catch(() => {});
     }
+  }
+
+  function validateQuery601Payload(payload = {}) {
+    const spuid = String(payload.spuid || '').trim();
+    if (!/^\d+$/.test(spuid)) {
+      const err = new Error('spuid is required and must be a numeric string');
+      err.status = 400;
+      err.code = 'invalidSpuid';
+      throw err;
+    }
+    return { ...payload, spuid };
+  }
+
+  function validateActionPayload(action, payload = {}) {
+    if (action === 'query-601') return validateQuery601Payload(payload);
+    const err = new Error(`action ${action} not supported for platform jd`);
+    err.status = 404;
+    err.code = 'actionNotFound';
+    throw err;
+  }
+
+  function createActionMetadata(action, payload = {}) {
+    if (action === 'query-601') return { action, spuid: payload.spuid };
+    return { action };
   }
 
   return {
     platform: 'jd',
     actions: ['query-601'],
     startLogin: (store, payload = {}) => runLogin(store, payload.timeoutMs),
-    startAction: (action, store) => {
-      if (action === 'query-601') return runQuery601(store);
-      const err = new Error(`action ${action} not supported for platform jd`);
-      err.status = 404;
-      throw err;
+    validateActionPayload,
+    createActionMetadata,
+    startAction: (action, store, payload = {}) => {
+      const normalizedPayload = validateActionPayload(action, payload);
+      if (action === 'query-601') return runQuery601(store, normalizedPayload);
+      throw new Error(`unreachable action ${action}`);
     },
-    _test: { responseHas601, summarize },
+    _test: { responseHas601, summarize, validateQuery601Payload },
   };
 }
 

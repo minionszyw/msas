@@ -14,26 +14,28 @@ npm start
 ## 使用
 
 ```bash
-curl -X POST http://127.0.0.1:8787/platforms/jd/stores \
+curl -X POST http://127.0.0.1:8787/stores \
   -H 'content-type: application/json' \
-  -d '{"storeId":"shop_a","name":"店铺A"}'
+  -d '{"storeId":"shop_a","name":"店铺A","platform":"jd"}'
 
-curl -X POST http://127.0.0.1:8787/platforms/tb/stores \
+curl -X POST http://127.0.0.1:8787/stores \
   -H 'content-type: application/json' \
-  -d '{"storeId":"shop_b","name":"店铺B"}'
+  -d '{"storeId":"shop_b","name":"店铺B","platform":"tb"}'
 
-curl -X POST http://127.0.0.1:8787/platforms/jd/stores/shop_a/login/start \
+curl 'http://127.0.0.1:8787/stores?platform=jd'
+
+curl -X POST http://127.0.0.1:8787/stores/shop_a/login/start \
   -H 'content-type: application/json' \
   -d '{}'
 
 curl http://127.0.0.1:8787/jobs/<jobId>
 
-curl -X POST http://127.0.0.1:8787/platforms/jd/stores/shop_a/actions/query-601/start \
+curl -X POST http://127.0.0.1:8787/stores/shop_a/actions/query-601/start \
   -H 'content-type: application/json' \
-  -d '{}'
+  -d '{"spuid":"<商品编码>"}'
 ```
 
-`query-601` 是京东平台首版动作，会打开商品列表页，点击全部商品，用商品编码 `10028128548417` 查询，并检查 HTTP 601、JSON `code:601`、以及“未经京东授权/网络环境较差”文案。
+`query-601` 是京东平台登录后的风控检测动作，会打开商品列表页，点击全部商品，用调用方传入的 `spuid` 查询，并检查 HTTP 601、JSON `code:601`、以及“未经京东授权/网络环境较差”文案。
 
 ## 环境变量
 
