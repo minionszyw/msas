@@ -1,7 +1,4 @@
-const { chromium } = require('playwright-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-
-chromium.use(StealthPlugin());
+const { createLaunchContext } = require('./browserContext');
 
 const LOGIN_URL = 'https://passport.shop.jd.com/login/index.action/jdm';
 const HOME_URL = 'https://shop.jd.com/jdm/home';
@@ -10,8 +7,6 @@ const ALL_WARE_SELECTOR = '#tab-AllWare > div > span';
 const QUERY_BUTTON_SELECTOR = '#app > div > div:nth-child(3) > form > div > div > div.jd-form-item.asterisk-left.actions-form-item > div.jd-form-item__content > div > button.jd-button.jd-button--primary.is-plain';
 const QUERY_API_NAME = 'dsm.product.manage.ProductInfoReadViewService.queryValidProductList';
 const QUERY_API_URL_PART = `api=${QUERY_API_NAME}`;
-const DEFAULT_CHROME_PATH = process.env.CHROME_PATH || '/opt/google/chrome/chrome';
-const DEFAULT_VIEWPORT = { width: 1365, height: 900 };
 
 function now() {
   return new Date().toISOString();
@@ -29,22 +24,7 @@ function responseHas601(status, bodyText) {
 }
 
 function createJdPlatform(options = {}) {
-  const chromePath = options.chromePath || DEFAULT_CHROME_PATH;
-  const headed = options.headed !== false;
-  const launchPersistentContext = options.launchPersistentContext || ((profileDir, launchOptions) => chromium.launchPersistentContext(profileDir, launchOptions));
-
-  async function launchContext(store, headless = !headed) {
-    return launchPersistentContext(store.profileDir, {
-      headless,
-      executablePath: chromePath,
-      viewport: DEFAULT_VIEWPORT,
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--no-first-run',
-        '--no-default-browser-check',
-      ],
-    });
-  }
+  const launchContext = createLaunchContext(options);
 
   function isHomeUrl(url) {
     return String(url || '').startsWith(HOME_URL);

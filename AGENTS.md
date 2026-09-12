@@ -2,11 +2,12 @@
 
 ## Project Structure & Module Organization
 
-This CommonJS Node.js service uses a modular architecture behind one Express gateway. `src/server.js` owns HTTP routing and validation. `src/automationService.js` owns stores, jobs, locking, persistence, and platform dispatch. Keep platform URLs, selectors, login checks, and actions in `src/platforms/<platform>Platform.js`; only JD automation is implemented. Tests live in `test/`, and platform research belongs in `docs/platforms/`.
+This CommonJS Node.js service uses a modular architecture behind one Express gateway. `src/server.js` owns HTTP routing and validation. `src/automationService.js` owns stores, jobs, locking, persistence, and platform dispatch. Keep platform URLs, selectors, login checks, and actions in `src/platforms/<platform>Platform.js`; JD and Taobao automation are implemented. Tests live in `test/`, and platform research belongs in `docs/platforms/`.
 
 ## Engineering Principles
 
 - Keep one public gateway and a consistent adapter contract across platforms.
+- Prefer authenticated platform APIs to DOM interaction for queries.
 - Apply DRY: reuse shared validation, job orchestration, and persistence instead of copying platform-neutral logic into adapters.
 - Follow the Boy Scout Rule: leave touched code clearer and cleaner than you found it, while keeping changes scoped.
 - Keep the repository clean. Do not commit generated profiles, runtime state, logs, temporary patches, or debugging artifacts.

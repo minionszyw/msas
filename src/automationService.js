@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { createJdPlatform } = require('./platforms/jdPlatform');
+const { createTbPlatform } = require('./platforms/tbPlatform');
 
 const SUPPORTED_PLATFORMS = ['jd', 'tb', 'pdd'];
 
@@ -96,7 +97,10 @@ function createAutomation(options = {}) {
   const locks = new Map();
   const adapters = options.adapters
     ? new Map(Object.entries(options.adapters))
-    : new Map([['jd', createJdPlatform({ chromePath: options.chromePath, headed: options.headed })]]);
+    : new Map([
+        ['jd', createJdPlatform({ chromePath: options.chromePath, headed: options.headed })],
+        ['tb', createTbPlatform({ chromePath: options.chromePath, headed: options.headed })],
+      ]);
 
   ensureDir(profilesDir);
   const stores = normalizeStores(readJson(storesFile, {}), profilesDir);
