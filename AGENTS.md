@@ -1,41 +1,34 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Architecture
 
-This CommonJS Node.js service uses a modular architecture behind one Express gateway. `src/server.js` owns HTTP routing and validation. `src/automationService.js` owns stores, jobs, locking, persistence, and platform dispatch. Keep platform URLs, selectors, login checks, and actions in `src/platforms/<platform>Platform.js`; JD and Taobao automation are implemented. Tests live in `test/`, and platform research belongs in `docs/platforms/`.
+This CommonJS Node.js service exposes one Express gateway. `src/server.js` owns routes and request validation; `src/automationService.js` owns stores, jobs, per-store locking, persistence, and adapter dispatch. Platform behavior belongs in `src/platforms/<platform>Platform.js`. Reuse `src/platforms/browserContext.js` for persistent Playwright-Stealth contexts. JD and Taobao are executable; PDD is registration-only. Keep platform research in `docs/platforms/<platform>/` and tests in `test/`.
 
-## Engineering Principles
+## Engineering Rules
 
-- Keep one public gateway and a consistent adapter contract across platforms.
-- Prefer authenticated platform APIs to DOM interaction for queries.
-- Apply DRY: reuse shared validation, job orchestration, and persistence instead of copying platform-neutral logic into adapters.
-- Follow the Boy Scout Rule: leave touched code clearer and cleaner than you found it, while keeping changes scoped.
-- Keep the repository clean. Do not commit generated profiles, runtime state, logs, temporary patches, or debugging artifacts.
+- Keep the gateway and adapter contract consistent across platforms.
+- Apply DRY: share platform-neutral browser, validation, persistence, and orchestration logic.
+- Prefer authenticated platform APIs to DOM interaction. Use DOM operations only when an API cannot perform the required action, and document the reason.
+- Follow the Boy Scout Rule while keeping changes scoped. Remove stale helpers, temporary files, logs, and debugging artifacts.
 
-## Business Workflow
+## Required Business Workflow
 
-The supported sequence is: create store, complete manual login, then run a query test. Create a store with `storeId`, `name`, and `platform`; call `/stores/:storeId/login/start` and finish login in the opened Chrome window; then call `/stores/:storeId/actions/query-test/start` with a numeric `itemId`. Browser automation runs headed by default and reuses `profiles/<storeId>/` after the first login. Use `HEADLESS=1` only when explicitly required.
+Every executable platform supports: create store, manual login, then `query-test`. Store creation accepts `storeId`, `name`, and `platform`. Login uses the shared `launchContext()` and is headed by default. After reaching the platform home page, close the login context and use the same `profiles/<storeId>` in a forced-headless context to verify reuse. Query tests accept a numeric-string `itemId` and reuse that profile. `HEADLESS=1` changes the default only when explicitly requested.
 
-## Build, Test, and Development Commands
+## Extending a Platform Adapter
 
-- `npm ci` installs locked dependencies.
-- `npm test` runs all `node:test` suites with `node --test`.
-- `npm start` starts the API at `http://127.0.0.1:8787` by default.
+1. Add `<platform>Platform.js` implementing `platform`, `actions`, `startLogin`, `validateActionPayload`, `createActionMetadata`, and `startAction`.
+2. Expose only the common `query-test` action. Return consistent `ok`, `loginRequired`, and platform-specific risk fields.
+3. Add the platform code to the gateway allowlist and register its adapter in `automationService`; this applies when implementing PDD or adding providers such as Douyin.
+4. Keep URLs, authentication checks, API signing, response parsing, and risk detection inside the adapter. Never expose cookies or tokens in job results or logs.
+5. Document login, success, query pages, API contracts, and fallback behavior under `docs/platforms/<platform>/`.
 
-There is no build step. Chrome defaults to `/opt/google/chrome/chrome`; override it with `CHROME_PATH`.
+## Commands, Style, and Tests
 
-## Coding Style & Naming Conventions
+Use `npm ci`, `npm test`, and `npm start`; there is no build step. Use two-space indentation, semicolons, single quotes, CommonJS modules, `camelCase` names, and `UPPER_SNAKE_CASE` constants. No formatter or linter is configured.
 
-Use two-space indentation, semicolons, single quotes, and trailing commas in multiline structures. Use `require`/`module.exports`, `camelCase` for functions and variables, and `UPPER_SNAKE_CASE` for constants. No formatter or linter is configured; match nearby code and review diffs.
+Use `node:test` and `node:assert/strict` in `test/*.test.js`. Mock adapters and browser contexts; cover login success/failure, post-close reuse, payload validation, API success, auth expiry, risk responses, and cleanup. Use temporary directories and run `npm test` before committing.
 
-## Testing Guidelines
+## Git and Security
 
-Add descriptive tests to `test/*.test.js` using `node:test` and `node:assert/strict`. Use temporary directories for persistence tests and mock adapters so unit tests need no browser, credentials, or network. Run `npm test` before every pull request; no coverage threshold is configured.
-
-## Commit & Pull Request Guidelines
-
-Use short, imperative commit subjects such as `Fix login verification`. Keep commits focused. Pull requests should explain behavior changes, list affected endpoints or actions, include test results, and link relevant issues. Add reproduction steps, logs, or screenshots for browser automation changes.
-
-## Security & Configuration
-
-Never commit `profiles/`, `stores.json`, cookies, credentials, or captured session responses. Configure machine-specific paths through `PROFILES_DIR`, `STORES_FILE`, and `CHROME_PATH`.
+Use short imperative commit subjects. Never commit `profiles/`, `stores.json`, credentials, cookies, session responses, or machine-specific paths. Keep configuration in `PROFILES_DIR`, `STORES_FILE`, and `CHROME_PATH`.

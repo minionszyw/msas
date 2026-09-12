@@ -52,7 +52,7 @@ curl -X POST http://127.0.0.1:8787/stores/shop_jd/actions/query-test/start \
 
 curl -X POST http://127.0.0.1:8787/stores/shop_tb/actions/query-test/start \
   -H 'content-type: application/json' \
-  -d '{"itemId":"1073633522598"}'
+  -d '{"itemId":"<商品ID>"}'
 
 curl http://127.0.0.1:8787/jobs/<jobId>
 ```

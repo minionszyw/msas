@@ -16,7 +16,7 @@
 ```json
 {
   "url": "/taobao/manager/table.htm",
-  "jsonBody": "{\"tab\":\"all\",\"pagination\":{\"current\":1,\"pageSize\":20},\"filtertab\":\"\",\"filter\":{\"queryItemId\":\"1073633522598\"},\"table\":{}}"
+  "jsonBody": "{\"tab\":\"all\",\"pagination\":{\"current\":1,\"pageSize\":20},\"filtertab\":\"\",\"filter\":{\"queryItemId\":\"<itemId>\"},\"table\":{}}"
 }
 ```
 
@@ -32,4 +32,4 @@ md5(<_m_h5_tk token>&<timestamp>&<appKey>&<data>)
 
 响应外层通过 `ret` 判断 MTOP 成功；`data.result` 是第二层 JSON 字符串。商品列表位于 `data.table.dataSource`，分页信息位于 `data.pagination`。查询结果按 `itemId` 精确匹配，并标准化标题、链接、价格、库存、销量、状态和创建时间。
 
-2026-09-12 使用商品 ID `1073633522598` 验证：HTTP 200、`SUCCESS::调用成功`，返回一条匹配商品。
+使用店铺内已存在的商品 ID 验证时，接口返回 HTTP 200、`SUCCESS::调用成功` 和一条精确匹配的商品记录。

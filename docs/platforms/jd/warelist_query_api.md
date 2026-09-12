@@ -1,271 +1,38 @@
-# 京东商品列表页查询 API
+# 京东商品管理查询 API
 
-- 页面：`https://wares-jdm.jd.com/ware/wareList?activeTab=OnsaleWare&businessModel=0`
-- Tab：点击 `#tab-AllWare > div > span`（全部商品）
-- 查询按钮：`#app > div > div:nth-child(3) > form > div > div > div.jd-form-item.asterisk-left.actions-form-item > div.jd-form-item__content > div > button.jd-button.jd-button--primary.is-plain`
+## 页面与接口
 
+- 登录页：`https://passport.shop.jd.com/login/index.action/jdm`
+- 登录成功页：`https://shop.jd.com/jdm/home`
+- 商品列表页：`https://wares-jdm.jd.com/ware/wareList?activeTab=OnsaleWare&businessModel=0`
+- 查询 API：`dsm.product.manage.ProductInfoReadViewService.queryValidProductList`
 
-## Playwright-Stealth 有头验证
+首次登录使用 persistent context。登录窗口进入京东首页并关闭后，服务使用同一 `profiles/<storeId>` 启动无头 context，再次访问首页验证登录态复用。
 
-- 验证目的：普通有头 Playwright 复用 Playwright-mcp 登录态执行商品列表查询时可能触发 601/环境异常，因此补充使用 `playwright-extra` + `puppeteer-extra-plugin-stealth` 的有头模式验证。
-- 登录态复用：沿用 Playwright-mcp 的用户数据目录 `.playwright-mcp`，通过 `chromium.launchPersistentContext(userDataDir, { headless: false, executablePath: "/opt/google/chrome/chrome" })` 启动。
-- Stealth 插件：`chromium.use(StealthPlugin())`，并保留 `--disable-blink-features=AutomationControlled` 等启动参数。
-- 实测操作：进入商品列表页，点击“全部商品”，在“商品编码”输入调用方传入的 `itemId`，点击查询按钮，并监听 `fetch/xhr` 请求。
-- 实测结果：查询接口 `dsm.product.manage.ProductInfoReadViewService.queryValidProductList` 返回 HTTP `200`，JSON `code:200`，`msg:"成功"`。
-- 601 检测结果：HTTP `601` 次数为 `0`；响应体 JSON `code:601` 次数为 `0`；响应体未出现“未经京东授权”或“网络环境较差”。
-- 结论：使用 `playwright-stealth` 有头复用 `.playwright-mcp` 登录态执行商品列表查询，未出现 601 报错。
+查询测试打开商品列表页，填写调用方提供的 `itemId` 并触发查询，同时监听目标 API 的请求与响应。平台专属页面操作和风控解析均封装在京东 adapter 内。
 
-### Playwright-Stealth 参考脚本
+## 查询请求
 
-```js
-const { chromium } = require('playwright-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+目标接口使用 `POST https://sff.jd.com/api`，查询参数包含 `api=dsm.product.manage.ProductInfoReadViewService.queryValidProductList`。主要请求体结构为：
 
-chromium.use(StealthPlugin());
-
-const context = await chromium.launchPersistentContext('.playwright-mcp', {
-  headless: false,
-  executablePath: '/opt/google/chrome/chrome',
-  viewport: { width: 1365, height: 900 },
-  args: [
-    '--disable-blink-features=AutomationControlled',
-    '--no-first-run',
-    '--no-default-browser-check'
-  ]
-});
-
-const page = context.pages()[0] || await context.newPage();
-await page.goto('https://wares-jdm.jd.com/ware/wareList?activeTab=OnsaleWare&businessModel=0');
-await page.locator('#tab-AllWare > div > span').click();
-
-page.on('response', async (res) => {
-  if (res.url().includes('dsm.product.manage.ProductInfoReadViewService.queryValidProductList')) {
-    console.log(res.status(), await res.text());
-  }
-});
-```
-
-## 核心接口
-
-- Method：`POST`
-- URL：`https://sff.jd.com/api?v=1.0&appId=3MC69M4R3HFKCQ4S01DN&api=dsm.product.manage.ProductInfoReadViewService.queryValidProductList`
-- 主要请求体结构：`productListQueryReq` + `accessContext`
-
-## 四种查询字段映射
-
-| 查询项 | 请求字段 | 示例值 |
-|---|---|---|
-| 商品名称 | `productListQueryReq.productName` | `硫酸沙丁胺醇吸入气雾剂` |
-| 商品编码 | `productListQueryReq.productIdList` | 调用方传入的 `itemId` |
-| SKU编码 | `productListQueryReq.skuIdList` | `[<itemId>]` |
-| 货号 | `productListQueryReq.itemNum` | `1045513` |
-
-## 请求样例
-
-### 商品名称
-- URL：`https://sff.jd.com/api?v=1.0&appId=3MC69M4R3HFKCQ4S01DN&api=dsm.product.manage.ProductInfoReadViewService.queryValidProductList`
 ```json
 {
   "productListQueryReq": {
-    "productName": "硫酸沙丁胺醇吸入气雾剂",
-    "skuIdList": null,
-    "categoryIdList": null,
-    "productIdList": null,
-    "salesVolume": null,
-    "jdPrice": null,
-    "shopCategory": null,
-    "stockNum": null,
-    "brandIdList": [],
-    "itemNum": null,
+    "productIdList": ["<itemId>"],
     "productState": "11",
-    "modified": null,
-    "productType": null,
-    "startOnlineTime": null,
-    "endOnlineTime": null,
-    "startOfflineTime": null,
-    "endOfflineTime": null,
-    "startCreated": null,
-    "endCreated": null,
-    "startModified": null,
-    "endModified": null,
-    "categoryIds": [],
-    "minSalesVolume": null,
-    "maxSalesVolume": null,
-    "minJdPrice": null,
-    "maxJdPrice": null,
-    "minStockNum": null,
-    "maxStockNum": null,
-    "supplyProductIdList": null,
-    "supplySkuIdList": null,
-    "supplyIdList": null,
-    "sortMap": {
-      "modified": "desc"
-    },
+    "sortMap": { "modified": "desc" },
     "pageNum": 1,
     "pageSize": 10
   },
   "accessContext": {
     "source": "web",
-    "businessModel": "0",
-    "proxyBelongBizId": "",
-    "originType": null
+    "businessModel": "0"
   }
 }
 ```
 
-### 商品编码
-- URL：`https://sff.jd.com/api?v=1.0&appId=3MC69M4R3HFKCQ4S01DN&api=dsm.product.manage.ProductInfoReadViewService.queryValidProductList`
-```json
-{
-  "productListQueryReq": {
-    "productName": null,
-    "skuIdList": null,
-    "categoryIdList": null,
-    "productIdList": [
-      <itemId>
-    ],
-    "salesVolume": null,
-    "jdPrice": null,
-    "shopCategory": null,
-    "stockNum": null,
-    "brandIdList": [],
-    "itemNum": null,
-    "productState": "11",
-    "modified": null,
-    "productType": null,
-    "startOnlineTime": null,
-    "endOnlineTime": null,
-    "startOfflineTime": null,
-    "endOfflineTime": null,
-    "startCreated": null,
-    "endCreated": null,
-    "startModified": null,
-    "endModified": null,
-    "categoryIds": [],
-    "minSalesVolume": null,
-    "maxSalesVolume": null,
-    "minJdPrice": null,
-    "maxJdPrice": null,
-    "minStockNum": null,
-    "maxStockNum": null,
-    "supplyProductIdList": null,
-    "supplySkuIdList": null,
-    "supplyIdList": null,
-    "sortMap": {
-      "modified": "desc"
-    },
-    "pageNum": 1,
-    "pageSize": 10
-  },
-  "accessContext": {
-    "source": "web",
-    "businessModel": "0",
-    "proxyBelongBizId": "",
-    "originType": null
-  }
-}
-```
+## 响应与风控判断
 
-### SKU编码
-- URL：`https://sff.jd.com/api?v=1.0&appId=3MC69M4R3HFKCQ4S01DN&api=dsm.product.manage.ProductInfoReadViewService.queryValidProductList`
-```json
-{
-  "productListQueryReq": {
-    "productName": null,
-    "skuIdList": [
-      <skuid>
-    ],
-    "categoryIdList": null,
-    "productIdList": null,
-    "salesVolume": null,
-    "jdPrice": null,
-    "shopCategory": null,
-    "stockNum": null,
-    "brandIdList": [],
-    "itemNum": null,
-    "productState": "11",
-    "modified": null,
-    "productType": null,
-    "startOnlineTime": null,
-    "endOnlineTime": null,
-    "startOfflineTime": null,
-    "endOfflineTime": null,
-    "startCreated": null,
-    "endCreated": null,
-    "startModified": null,
-    "endModified": null,
-    "categoryIds": [],
-    "minSalesVolume": null,
-    "maxSalesVolume": null,
-    "minJdPrice": null,
-    "maxJdPrice": null,
-    "minStockNum": null,
-    "maxStockNum": null,
-    "supplyProductIdList": null,
-    "supplySkuIdList": null,
-    "supplyIdList": null,
-    "sortMap": {
-      "modified": "desc"
-    },
-    "pageNum": 1,
-    "pageSize": 10
-  },
-  "accessContext": {
-    "source": "web",
-    "businessModel": "0",
-    "proxyBelongBizId": "",
-    "originType": null
-  }
-}
-```
+查询成功要求目标 API 返回 HTTP 200 且 JSON `code` 为 200。adapter 同时检查 HTTP 601、JSON `code:601`、“未经京东授权”和“网络环境较差”等风控信号。
 
-### 货号
-- URL：`https://sff.jd.com/api?v=1.0&appId=3MC69M4R3HFKCQ4S01DN&api=dsm.product.manage.ProductInfoReadViewService.queryValidProductList`
-```json
-{
-  "productListQueryReq": {
-    "productName": null,
-    "skuIdList": null,
-    "categoryIdList": null,
-    "productIdList": null,
-    "salesVolume": null,
-    "jdPrice": null,
-    "shopCategory": null,
-    "stockNum": null,
-    "brandIdList": [],
-    "itemNum": "1045513",
-    "productState": "11",
-    "modified": null,
-    "productType": null,
-    "startOnlineTime": null,
-    "endOnlineTime": null,
-    "startOfflineTime": null,
-    "endOfflineTime": null,
-    "startCreated": null,
-    "endCreated": null,
-    "startModified": null,
-    "endModified": null,
-    "categoryIds": [],
-    "minSalesVolume": null,
-    "maxSalesVolume": null,
-    "minJdPrice": null,
-    "maxJdPrice": null,
-    "minStockNum": null,
-    "maxStockNum": null,
-    "supplyProductIdList": null,
-    "supplySkuIdList": null,
-    "supplyIdList": null,
-    "sortMap": {
-      "modified": "desc"
-    },
-    "pageNum": 1,
-    "pageSize": 10
-  },
-  "accessContext": {
-    "source": "web",
-    "businessModel": "0",
-    "proxyBelongBizId": "",
-    "originType": null
-  }
-}
-```
+任务结果通过 `ok` 表示查询是否成功且未命中风控，`hit601` 表示是否检测到风控，`loginRequired` 表示 persistent profile 的登录态是否失效。
