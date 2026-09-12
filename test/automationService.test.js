@@ -51,15 +51,16 @@ test('placeholder platforms can be registered but not executed', () => {
   const automation = createAutomation({ rootDir: tmp, profilesDir: path.join(tmp, 'profiles'), storesFile: path.join(tmp, 'stores.json') });
   automation.ensureStore('tb', 'shop_b', 'B');
   assert.throws(() => automation.startLogin('shop_b'), /not implemented/);
-  assert.throws(() => automation.startAction('shop_b', 'query-601', { spuid: '123' }), /not implemented/);
+  assert.throws(() => automation.startAction('shop_b', 'query-test', { itemId: '123' }), /not implemented/);
 });
 
 
-test('jd query-601 requires spuid and records the caller supplied value in job metadata', () => {
+test('jd query-test requires itemId and records the caller supplied value in job metadata', () => {
   const platform = createJdPlatform();
-  assert.throws(() => platform.validateActionPayload('query-601', {}), /spuid/);
-  assert.throws(() => platform.validateActionPayload('query-601', { spuid: 'abc' }), /spuid/);
-  assert.deepEqual(platform.validateActionPayload('query-601', { spuid: '998877' }), { spuid: '998877' });
+  assert.throws(() => platform.validateActionPayload('query-test', {}), /itemId/);
+  assert.throws(() => platform.validateActionPayload('query-test', { itemId: 'abc' }), /itemId/);
+  assert.deepEqual(platform.validateActionPayload('query-test', { itemId: '998877' }), { itemId: '998877' });
+  assert.throws(() => platform.validateActionPayload('query-601', { itemId: '998877' }), /not supported/);
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multi-platform-store-api-'));
   const fakePlatform = {
@@ -70,7 +71,7 @@ test('jd query-601 requires spuid and records the caller supplied value in job m
   };
   const automation = createAutomation({ rootDir: tmp, profilesDir: path.join(tmp, 'profiles'), storesFile: path.join(tmp, 'stores.json'), adapters: { jd: fakePlatform } });
   automation.ensureStore('jd', 'shop_a', 'A');
-  assert.throws(() => automation.startAction('shop_a', 'query-601', {}), /spuid/);
-  const job = automation.startAction('shop_a', 'query-601', { spuid: '998877' });
-  assert.equal(job.metadata.spuid, '998877');
+  assert.throws(() => automation.startAction('shop_a', 'query-test', {}), /itemId/);
+  const job = automation.startAction('shop_a', 'query-test', { itemId: '998877' });
+  assert.equal(job.metadata.itemId, '998877');
 });

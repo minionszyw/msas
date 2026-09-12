@@ -11,31 +11,41 @@ npm start
 
 默认监听：`http://127.0.0.1:8787`
 
-## 使用
+## 业务流程
+
+### 1. 创建店铺
 
 ```bash
 curl -X POST http://127.0.0.1:8787/stores \
   -H 'content-type: application/json' \
-  -d '{"storeId":"shop_a","name":"店铺A","platform":"jd"}'
+  -d '{"storeId":"shop_jd","name":"京东店铺","platform":"jd"}'
+```
 
-curl -X POST http://127.0.0.1:8787/stores \
-  -H 'content-type: application/json' \
-  -d '{"storeId":"shop_b","name":"店铺B","platform":"tb"}'
+创建参数包括店铺 ID、店铺名和平台。当前只有京东平台实现了登录和查询测试。
 
-curl 'http://127.0.0.1:8787/stores?platform=jd'
+### 2. 首次人工登录
 
-curl -X POST http://127.0.0.1:8787/stores/shop_a/login/start \
+```bash
+curl -X POST http://127.0.0.1:8787/stores/shop_jd/login/start \
   -H 'content-type: application/json' \
   -d '{}'
 
 curl http://127.0.0.1:8787/jobs/<jobId>
-
-curl -X POST http://127.0.0.1:8787/stores/shop_a/actions/query-601/start \
-  -H 'content-type: application/json' \
-  -d '{"spuid":"<商品编码>"}'
 ```
 
-`query-601` 是京东平台登录后的风控检测动作，会打开商品列表页，点击全部商品，用调用方传入的 `spuid` 查询，并检查 HTTP 601、JSON `code:601`、以及“未经京东授权/网络环境较差”文案。
+在打开的 Chrome 中完成人工登录。登录态保存在 `profiles/<storeId>/`，后续操作会复用，无需每次登录。
+
+### 3. 查询测试
+
+```bash
+curl -X POST http://127.0.0.1:8787/stores/shop_jd/actions/query-test/start \
+  -H 'content-type: application/json' \
+  -d '{"itemId":"<商品ID>"}'
+
+curl http://127.0.0.1:8787/jobs/<jobId>
+```
+
+`query-test` 会打开京东商品列表页，用 `itemId` 查询商品，并检查 HTTP 601、JSON `code:601` 以及“未经京东授权/网络环境较差”等风控信号。任务结果中的 `hit601` 表示是否命中风控；`loginRequired` 表示登录态是否失效。
 
 ## 环境变量
 
