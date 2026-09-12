@@ -31,10 +31,11 @@ function responseHas601(status, bodyText) {
 function createJdPlatform(options = {}) {
   const chromePath = options.chromePath || DEFAULT_CHROME_PATH;
   const headed = options.headed !== false;
+  const launchPersistentContext = options.launchPersistentContext || ((profileDir, launchOptions) => chromium.launchPersistentContext(profileDir, launchOptions));
 
-  async function launchContext(store) {
-    return chromium.launchPersistentContext(store.profileDir, {
-      headless: !headed,
+  async function launchContext(store, headless = !headed) {
+    return launchPersistentContext(store.profileDir, {
+      headless,
       executablePath: chromePath,
       viewport: DEFAULT_VIEWPORT,
       args: [
@@ -45,25 +46,55 @@ function createJdPlatform(options = {}) {
     });
   }
 
+  function isHomeUrl(url) {
+    return String(url || '').startsWith(HOME_URL);
+  }
+
+  async function verifySavedLogin(store) {
+    const context = await launchContext(store, true);
+    const page = context.pages()[0] || await context.newPage();
+    try {
+      await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(2000);
+      const title = await page.title().catch(() => '');
+      const finalUrl = page.url();
+      const ok = isHomeUrl(finalUrl);
+      return { ok, loginRequired: !ok, title, finalUrl };
+    } finally {
+      await context.close().catch(() => {});
+    }
+  }
+
   async function runLogin(store, timeoutMs = 10 * 60 * 1000) {
     const context = await launchContext(store);
     const page = context.pages()[0] || await context.newPage();
+    let loginResult;
     try {
       await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
         const currentUrl = page.url();
-        if (currentUrl.startsWith(HOME_URL) || currentUrl.includes('shop.jd.com/jdm/home')) break;
+        if (isHomeUrl(currentUrl)) break;
         await page.waitForTimeout(2000);
       }
 
       const title = await page.title().catch(() => '');
       const finalUrl = page.url();
-      const ok = finalUrl.startsWith(HOME_URL) || finalUrl.includes('shop.jd.com/jdm/home');
-      return { ok, title, finalUrl, profileDir: store.profileDir, timeoutMs };
+      const loginPageOk = isHomeUrl(finalUrl);
+      loginResult = { ok: loginPageOk, loginPageOk, reuseCheck: null, title, finalUrl, profileDir: store.profileDir, timeoutMs };
     } finally {
       await context.close().catch(() => {});
     }
+
+    if (!loginResult.loginPageOk) return loginResult;
+    const reuseCheck = await verifySavedLogin(store).catch((err) => ({
+      ok: false,
+      loginRequired: null,
+      title: '',
+      finalUrl: null,
+      error: err.message,
+    }));
+    return { ...loginResult, ok: reuseCheck.ok, reuseCheck };
   }
 
   function attachCapture(page, records, phaseRef) {
@@ -182,7 +213,7 @@ function createJdPlatform(options = {}) {
       if (action === 'query-test') return runQueryTest(store, normalizedPayload);
       throw new Error(`unreachable action ${action}`);
     },
-    _test: { responseHas601, summarize, validateQueryTestPayload },
+    _test: { responseHas601, summarize, validateQueryTestPayload, isHomeUrl },
   };
 }
 

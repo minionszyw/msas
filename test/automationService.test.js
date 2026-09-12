@@ -6,11 +6,110 @@ const path = require('path');
 const { createAutomation, sanitizeStoreId, sanitizePlatform, normalizeStores } = require('../src/automationService');
 const { createJdPlatform, responseHas601 } = require('../src/platforms/jdPlatform');
 
+function createFakePage(finalUrl, options = {}) {
+  return {
+    goto: async (url) => {
+      if (options.onGoto) options.onGoto(url);
+    },
+    waitForTimeout: async () => {},
+    title: async () => options.title || '',
+    url: () => finalUrl,
+  };
+}
+
+function createFakeContext(page, onClose = () => {}) {
+  return {
+    pages: () => [page],
+    newPage: async () => page,
+    close: async () => onClose(),
+  };
+}
+
 test('jd 601 detector handles transport, JSON code, and environment text', () => {
   assert.equal(responseHas601(601, '{"code":200}'), true);
   assert.equal(responseHas601(200, '{"code":601,"msg":"x"}'), true);
   assert.equal(responseHas601(200, '尊敬的商家您好，经识别您正在使用未经京东授权的软件操作'), true);
   assert.equal(responseHas601(200, '{"code":200,"msg":"成功"}'), false);
+});
+
+test('jd login closes headed context then verifies the same profile headlessly', async () => {
+  const launches = [];
+  const closes = [];
+  const visitedUrls = [];
+  const contexts = [
+    createFakeContext(createFakePage('https://shop.jd.com/jdm/home', { title: '京麦商家PC端', onGoto: (url) => visitedUrls.push(url) }), () => closes.push('login')),
+    createFakeContext(createFakePage('https://shop.jd.com/jdm/home', { title: '京麦商家PC端', onGoto: (url) => visitedUrls.push(url) }), () => closes.push('verify')),
+  ];
+  const platform = createJdPlatform({
+    headed: true,
+    launchPersistentContext: async (profileDir, options) => {
+      launches.push({ profileDir, options });
+      return contexts.shift();
+    },
+  });
+
+  const result = await platform.startLogin({ profileDir: '/profiles/shop_a' }, { timeoutMs: 1 });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.loginPageOk, true);
+  assert.equal(result.reuseCheck.ok, true);
+  assert.deepEqual(closes, ['login', 'verify']);
+  assert.equal(launches[0].options.headless, false);
+  assert.equal(launches[1].options.headless, true);
+  assert.equal(launches[0].profileDir, launches[1].profileDir);
+  assert.deepEqual(visitedUrls, [
+    'https://passport.shop.jd.com/login/index.action/jdm',
+    'https://shop.jd.com/jdm/home',
+  ]);
+});
+
+test('jd login reports an expired or unavailable saved login state', async () => {
+  const contexts = [
+    createFakeContext(createFakePage('https://shop.jd.com/jdm/home')),
+    createFakeContext(createFakePage('https://passport.shop.jd.com/login/index.action/jdm')),
+  ];
+  const platform = createJdPlatform({ launchPersistentContext: async () => contexts.shift() });
+
+  const result = await platform.startLogin({ profileDir: '/profiles/shop_a' }, { timeoutMs: 1 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.loginPageOk, true);
+  assert.equal(result.reuseCheck.ok, false);
+  assert.equal(result.reuseCheck.loginRequired, true);
+});
+
+test('jd login captures reuse verification errors', async () => {
+  let launchCount = 0;
+  const platform = createJdPlatform({
+    launchPersistentContext: async () => {
+      launchCount += 1;
+      if (launchCount === 2) throw new Error('verification launch failed');
+      return createFakeContext(createFakePage('https://shop.jd.com/jdm/home'));
+    },
+  });
+
+  const result = await platform.startLogin({ profileDir: '/profiles/shop_a' }, { timeoutMs: 1 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reuseCheck.loginRequired, null);
+  assert.match(result.reuseCheck.error, /verification launch failed/);
+});
+
+test('jd login skips reuse verification when manual login does not reach home', async () => {
+  let launchCount = 0;
+  const platform = createJdPlatform({
+    launchPersistentContext: async () => {
+      launchCount += 1;
+      return createFakeContext(createFakePage('https://passport.shop.jd.com/login/index.action/jdm'));
+    },
+  });
+
+  const result = await platform.startLogin({ profileDir: '/profiles/shop_a' }, { timeoutMs: 0 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.loginPageOk, false);
+  assert.equal(result.reuseCheck, null);
+  assert.equal(launchCount, 1);
 });
 
 test('store ids and platforms are constrained', () => {

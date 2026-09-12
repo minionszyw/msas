@@ -33,7 +33,7 @@ curl -X POST http://127.0.0.1:8787/stores/shop_jd/login/start \
 curl http://127.0.0.1:8787/jobs/<jobId>
 ```
 
-在打开的 Chrome 中完成人工登录。登录态保存在 `profiles/<storeId>/`，后续操作会复用，无需每次登录。
+在打开的 Chrome 中完成人工登录。进入京东首页并关闭浏览器后，服务会使用同一 `profiles/<storeId>/` 启动无头 Chrome，再次访问京东首页以验证登录态能够复用。登录任务仅在 `loginPageOk` 和 `reuseCheck.ok` 都为 `true` 时返回 `ok: true`。
 
 ### 3. 查询测试
 
