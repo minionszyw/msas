@@ -2,33 +2,30 @@
 
 ## Architecture
 
-This CommonJS Node.js service exposes one Express gateway. `src/server.js` owns routes and request validation; `src/automationService.js` owns stores, jobs, per-store locking, persistence, and adapter dispatch. Platform behavior belongs in `src/platforms/<platform>Platform.js`. Reuse `src/platforms/browserContext.js` for persistent Playwright-Stealth contexts. JD and Taobao are executable; PDD is registration-only. Keep platform research in `docs/platforms/<platform>/` and tests in `test/`.
+This CommonJS Node.js service exposes one Express gateway. `src/server.js` owns routes and HTTP validation. `src/automationService.js` composes store persistence, job scheduling, and adapter dispatch. `src/storeRepository.js` owns portable store records and profile-path derivation; `src/jobManager.js` owns job state, retention, and per-store locks. Keep browser and platform code in `src/platforms/`. JD and Taobao are executable; PDD is registration-only.
 
 ## Engineering Rules
 
-- Keep the gateway and adapter contract consistent across platforms.
-- Apply DRY: share platform-neutral browser, validation, persistence, and orchestration logic.
-- Prefer authenticated platform APIs to DOM interaction. Use DOM operations only when an API cannot perform the required action, and document the reason.
-- Follow the Boy Scout Rule while keeping changes scoped. Remove stale helpers, temporary files, logs, and debugging artifacts.
+- Keep one public gateway and one platform registry. Never duplicate platform allowlists.
+- Apply DRY to platform-neutral validation, login verification, persistence, and orchestration.
+- Prefer authenticated platform APIs. Use DOM interaction only when an API cannot perform the action, and document the reason.
+- Follow the Boy Scout Rule while keeping changes scoped. Remove dead helpers, stale compatibility branches, logs, and temporary artifacts.
+- Keep secrets and machine details internal. Never return or log cookies, tokens, profile paths, auth-state paths, or server stacks.
 
-## Required Business Workflow
+## Required Workflow
 
-Every executable platform supports: create store, manual login, then `query-test`. Store creation accepts `storeId`, `name`, and `platform`. Login uses the shared `launchContext()` and is headed by default. After reaching the platform home page, close the login context and use the same `profiles/<storeId>` in a forced-headless context to verify reuse. Query tests accept a numeric-string `itemId` and reuse that profile. `HEADLESS=1` changes the default only when explicitly requested.
+Every executable platform supports: create store, manual login, then `query-test`. Login uses the shared `createManualLoginFlow()` and is headed by default. After login, close the context and use the same `profiles/<storeId>` in a forced-headless context to verify reuse. `HEADLESS=1` changes the normal launch default only; reuse verification remains headless. Query tests accept a numeric-string `itemId`.
 
-## Extending a Platform Adapter
+## Extending an Adapter
 
-1. Add `<platform>Platform.js` implementing `platform`, `actions`, `startLogin`, `validateActionPayload`, `createActionMetadata`, and `startAction`.
-2. Expose only the common `query-test` action. Return consistent `ok`, `loginRequired`, and platform-specific risk fields.
-3. Add the platform code to the gateway allowlist and register its adapter in `automationService`; this applies when implementing PDD or adding providers such as Douyin.
-4. Keep URLs, authentication checks, API signing, response parsing, and risk detection inside the adapter. Never expose cookies or tokens in job results or logs.
-5. Document login, success, query pages, API contracts, and fallback behavior under `docs/platforms/<platform>/`.
+Register the platform once in `src/platforms/registry.js`. Implement an adapter with `platform`, `startLogin`, and an `actions` map. Each action provides `validate(payload)`, `metadata(payload)`, and `run(store, payload)`. Use `createQueryTestAction()` for the common query contract. Keep URLs, selectors, signing, response parsing, authentication checks, and risk detection inside the platform module or a platform-specific protocol module. Add concise research under `docs/platforms/<platform>/`.
 
 ## Commands, Style, and Tests
 
-Use `npm ci`, `npm test`, and `npm start`; there is no build step. Use two-space indentation, semicolons, single quotes, CommonJS modules, `camelCase` names, and `UPPER_SNAKE_CASE` constants. No formatter or linter is configured.
+Use `npm ci`, `npm test`, and `npm start`; there is no build step. Use two-space indentation, semicolons, single quotes, trailing commas in multiline structures, CommonJS modules, `camelCase`, and `UPPER_SNAKE_CASE`. No formatter or linter is configured.
 
-Use `node:test` and `node:assert/strict` in `test/*.test.js`. Mock adapters and browser contexts; cover login success/failure, post-close reuse, payload validation, API success, auth expiry, risk responses, and cleanup. Use temporary directories and run `npm test` before committing.
+Use `node:test` and `node:assert/strict` in `test/*.test.js`. Mock browser contexts and APIs. Cover validation, login failure, post-close reuse, auth expiry, risk responses, locking, migration, and cleanup. Run `npm test` and syntax checks before committing.
 
 ## Git and Security
 
-Use short imperative commit subjects. Never commit `profiles/`, `stores.json`, credentials, cookies, session responses, or machine-specific paths. Keep configuration in `PROFILES_DIR`, `STORES_FILE`, and `CHROME_PATH`.
+Use short imperative commit subjects. Never commit `profiles/`, `stores.json`, credentials, cookies, captured responses, logs, or machine-specific paths. Configure runtime state with `PROFILES_DIR`, `STORES_FILE`, `CHROME_PATH`, and `MAX_COMPLETED_JOBS`.

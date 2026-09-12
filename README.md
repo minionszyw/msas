@@ -67,10 +67,18 @@ curl http://127.0.0.1:8787/jobs/<jobId>
 - `STORES_FILE`：店铺数据文件，默认 `./stores.json`
 - `CHROME_PATH`：Chrome 路径，默认 `/opt/google/chrome/chrome`
 - `HEADLESS=1`：切到无头；默认有头
+- `MAX_COMPLETED_JOBS`：内存中保留的已完成任务数，必须为正整数，默认 `1000`
+
+`timeoutMs` 可用于调整人工登录等待时间，必须是 `1` 到 `3600000` 之间的整数，默认十分钟。
+
+服务启动时会规范化旧版 `stores.json`：保留店铺业务字段，并根据当前 `PROFILES_DIR` 重新派生 profile 路径。文件损坏或结构非法时服务会明确报错，不会将其当作空数据覆盖。
+超过保留上限后，最旧的已完成任务会被移除，再次查询其 job ID 将返回 `404`；排队或运行中的任务不会被移除。
 
 ## 架构
 
 - `src/server.js`：统一 HTTP 网关。
-- `src/automationService.js`：平台无关的店铺、任务、锁和分发逻辑。
-- `src/platforms/`：平台 adapter；共享浏览器 context 工厂，平台专属登录、查询和响应解析各自隔离。
+- `src/automationService.js`：组合店铺、任务与平台动作的业务编排。
+- `src/storeRepository.js`：店铺持久化和旧数据迁移。
+- `src/jobManager.js`：任务生命周期、同店铺串行锁和完成任务清理。
+- `src/platforms/`：平台注册表、共享登录流程和平台 adapter；平台 API 协议与页面操作相互隔离。
 - `docs/platforms/`：平台专属验证资料。
