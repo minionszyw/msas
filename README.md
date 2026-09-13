@@ -1,6 +1,6 @@
 # Multi-Platform Store API
 
-本地多平台店铺 Playwright-Stealth 自动化接口。每个店铺使用独立持久化 Chrome profile，默认有头模式。当前实现京东和淘宝的登录与查询测试，拼多多可先登记店铺信息。
+本地多平台店铺 Playwright-Stealth 自动化接口。每个店铺使用独立持久化 Chrome profile，默认有头模式。京东支持商品查询与管理，淘宝支持商品查询，拼多多可先登记店铺信息。
 
 ## 启动
 
@@ -57,7 +57,34 @@ curl -X POST http://127.0.0.1:8787/stores/shop_tb/actions/query-test/start \
 curl http://127.0.0.1:8787/jobs/<jobId>
 ```
 
-`query-test` 使用数字字符串 `itemId`。京东通过商品列表页查询并检测 601 风控；淘宝直接调用 `mtop.taobao.sell.pc.manage.async`，不依赖商品页 DOM。淘宝结果通过 `itemFound` 和 `item` 返回匹配商品，通过 `loginRequired` 和 `riskCheck.detected` 区分登录失效与安全验证。
+`query-test` 使用数字字符串 `itemId`。京东调用带 H5ST 签名的 SFF API 并检测风控；淘宝调用 `mtop.taobao.sell.pc.manage.async`。两者都不依赖商品页 DOM。
+
+### 4. 京东商品管理
+
+以下动作共用 `/stores/<storeId>/actions/<action>/start`。商品编码和 SKU 编码可使用数组，或使用逗号、空格分隔的字符串；每次最多 100 个。
+
+```bash
+# 按商品名称、SKU 编码、商品编码或货号查询，可组合条件
+curl -X POST http://127.0.0.1:8787/stores/shop_jd/actions/query-products/start \
+  -H 'content-type: application/json' \
+  -d '{"productIds":"<商品编码1>,<商品编码2>","pageNum":1,"pageSize":10}'
+
+# 单个或批量上架/自主下架
+curl -X POST http://127.0.0.1:8787/stores/shop_jd/actions/update-product-status/start \
+  -H 'content-type: application/json' \
+  -d '{"productIds":["<商品编码>"],"status":"offline"}'
+
+# SKU 库存与价格使用绝对目标值
+curl -X POST http://127.0.0.1:8787/stores/shop_jd/actions/update-sku-stock/start \
+  -H 'content-type: application/json' \
+  -d '{"productId":"<商品编码>","updates":[{"skuId":"<SKU编码>","stock":100}]}'
+
+curl -X POST http://127.0.0.1:8787/stores/shop_jd/actions/update-sku-price/start \
+  -H 'content-type: application/json' \
+  -d '{"productId":"<商品编码>","updates":[{"skuId":"<SKU编码>","price":"19.90"}]}'
+```
+
+查询还接受 `productName`、`skuIds` 和 `itemNum`。写操作会先读取当前值，跳过已达到目标值的数据，再在写入后通过 API 回读；结果中的 `verified` 表示目标值已经生效。
 
 ## 环境变量
 
@@ -80,5 +107,5 @@ curl http://127.0.0.1:8787/jobs/<jobId>
 - `src/automationService.js`：组合店铺、任务与平台动作的业务编排。
 - `src/storeRepository.js`：店铺持久化和旧数据迁移。
 - `src/jobManager.js`：任务生命周期、同店铺串行锁和完成任务清理。
-- `src/platforms/`：平台注册表、共享登录流程和平台 adapter；平台 API 协议与页面操作相互隔离。
+- `src/platforms/`：平台注册表、共享登录流程、公共动作校验和平台 adapter；平台 API 协议与业务编排相互隔离。
 - `docs/platforms/`：平台专属验证资料。

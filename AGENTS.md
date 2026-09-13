@@ -9,16 +9,17 @@ This CommonJS Node.js service exposes one Express gateway. `src/server.js` owns 
 - Keep one public gateway and one platform registry. Never duplicate platform allowlists.
 - Apply DRY to platform-neutral validation, login verification, persistence, and orchestration.
 - Prefer authenticated platform APIs. Use DOM interaction only when an API cannot perform the action, and document the reason.
+- Make mutations idempotent with absolute target values. Read before writing, validate resource ownership, and read back after writing.
 - Follow the Boy Scout Rule while keeping changes scoped. Remove dead helpers, stale compatibility branches, logs, and temporary artifacts.
 - Keep secrets and machine details internal. Never return or log cookies, tokens, profile paths, auth-state paths, or server stacks.
 
 ## Required Workflow
 
-Every executable platform supports: create store, manual login, then `query-test`. Login uses the shared `createManualLoginFlow()` and is headed by default. After login, close the context and use the same `profiles/<storeId>` in a forced-headless context to verify reuse. `HEADLESS=1` changes the normal launch default only; reuse verification remains headless. Query tests accept a numeric-string `itemId`.
+Every executable platform supports: create store, manual login, then `query-test`. Login uses `createManualLoginFlow()` and is headed by default. After login, close the context and use the same `profiles/<storeId>` in a forced-headless context to verify reuse. `HEADLESS=1` changes the normal launch default only; reuse verification remains headless. Query tests accept a numeric-string `itemId`.
 
 ## Extending an Adapter
 
-Register the platform once in `src/platforms/registry.js`. Implement an adapter with `platform`, `startLogin`, and an `actions` map. Each action provides `validate(payload)`, `metadata(payload)`, and `run(store, payload)`. Use `createQueryTestAction()` for the common query contract. Keep URLs, selectors, signing, response parsing, authentication checks, and risk detection inside the platform module or a platform-specific protocol module. Add concise research under `docs/platforms/<platform>/`.
+Register the platform once in `src/platforms/registry.js`. Implement `platform`, `startLogin`, and an `actions` map; every action provides `validate`, `metadata`, and `run`. Reuse common action names and validators where semantics match. Use `createQueryTestAction()` for the common query contract. Keep URLs, selectors, signing, response parsing, authentication checks, and risk detection in a platform-specific protocol module. Add concise research under `docs/platforms/<platform>/`.
 
 ## Commands, Style, and Tests
 

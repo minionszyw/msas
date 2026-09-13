@@ -1,140 +1,322 @@
+const fs = require('fs');
+const path = require('path');
+const { makeError } = require('../errors');
 const { createLaunchContext } = require('./browserContext');
+const { createJdSffClient } = require('./jdSff');
 const { createManualLoginFlow } = require('./loginFlow');
+const {
+  createProductQueryAction,
+  createProductStatusAction,
+  createSkuPriceAction,
+  createSkuStockAction,
+} = require('./productActions');
 const { createQueryTestAction, parseJsonMaybe } = require('./platformUtils');
 
 const LOGIN_URL = 'https://passport.shop.jd.com/login/index.action/jdm';
 const HOME_URL = 'https://shop.jd.com/jdm/home';
 const WARE_LIST_URL = 'https://wares-jdm.jd.com/ware/wareList?activeTab=OnsaleWare&businessModel=0';
-const ALL_WARE_SELECTOR = '#tab-AllWare > div > span';
-const QUERY_BUTTON_SELECTOR = '#app > div > div:nth-child(3) > form > div > div > div.jd-form-item.asterisk-left.actions-form-item > div.jd-form-item__content > div > button.jd-button.jd-button--primary.is-plain';
-const QUERY_API_NAME = 'dsm.product.manage.ProductInfoReadViewService.queryValidProductList';
-const QUERY_API_URL_PART = `api=${QUERY_API_NAME}`;
+const READBACK_ATTEMPTS = 3;
+const READBACK_DELAY_MS = 1500;
 
-function responseHas601(status, bodyText) {
-  if (String(status) === '601') return true;
-  const json = parseJsonMaybe(bodyText || '');
-  if (json && Number(json.code) === 601) return true;
-  return /未经京东授权|网络环境较差|"code"\s*:\s*601/.test(bodyText || '');
+function authStatePath(store) {
+  return path.join(store.profileDir, 'auth-state.json');
 }
 
-function summarizeQuery(records, bodyText, itemId) {
-  const queryResponses = records.filter((record) => record.url.includes(QUERY_API_URL_PART));
-  const http601Count = records.filter((record) => String(record.status) === '601').length;
-  const json601Count = records.filter((record) => /"code"\s*:\s*601/.test(record.body || '')).length;
-  const badTextCount = records.filter((record) => /未经京东授权|网络环境较差/.test(record.body || '')).length;
-  const bodyBadText = responseHas601(undefined, bodyText);
-  const querySummaries = queryResponses.map((record) => {
-    const json = parseJsonMaybe(record.body || '');
-    return {
-      httpStatus: record.status,
-      jsonCode: json && json.code,
-      msg: json && json.msg,
-      hasItemId: (record.body || '').includes(itemId),
-    };
-  });
-  const queryOk = querySummaries.some((response) => (
-    response.httpStatus === 200 && Number(response.jsonCode) === 200
-  ));
-  const hit601 = http601Count > 0
-    || json601Count > 0
-    || badTextCount > 0
-    || bodyBadText
-    || queryResponses.some((record) => responseHas601(record.status, record.body));
+async function restoreSavedState(context, store) {
+  if (!fs.existsSync(authStatePath(store))) return false;
+  const state = parseJsonMaybe(fs.readFileSync(authStatePath(store), 'utf8'));
+  const cookies = state && Array.isArray(state.cookies) ? state.cookies : [];
+  const origins = state && Array.isArray(state.origins) ? state.origins : [];
+  if (cookies.length) await context.addCookies(cookies);
+  if (origins.length) {
+    await context.addInitScript((savedOrigins) => {
+      const saved = savedOrigins.find(({ origin }) => origin === window.location.origin);
+      if (!saved || !Array.isArray(saved.localStorage)) return;
+      for (const { name, value } of saved.localStorage) window.localStorage.setItem(name, value);
+    }, origins);
+  }
+  return cookies.length > 0 || origins.length > 0;
+}
+
+function productState(product) {
+  const state = product && product.productStatusVO && Number(product.productStatusVO.productState);
+  if (state === 4) return 'online';
+  if (state === 6) return 'offline';
+  return 'other';
+}
+
+function normalizeProduct(product = {}) {
+  const skuInfo = product.productSkuInfoVO || {};
+  const price = product.priceDetailVO || {};
   return {
-    hit601,
-    ok: queryOk && !hit601,
-    http601Count,
-    json601Count,
-    badTextCount,
-    bodyBadText,
-    queryResponseCount: queryResponses.length,
-    queryResponses: querySummaries,
+    productId: product.productId === undefined ? undefined : String(product.productId),
+    productName: product.productName,
+    itemNum: product.itemNum,
+    status: productState(product),
+    statusDescription: product.productStatusVO && product.productStatusVO.statusDesc,
+    stock: product.stockNum,
+    minPrice: price.minJdPrice,
+    maxPrice: price.maxJdPrice,
+    skuCount: skuInfo.skuCount,
+    primarySkuId: skuInfo.skuId === undefined ? undefined : String(skuInfo.skuId),
+    modified: product.modified,
+  };
+}
+
+function productPage(data) {
+  const rows = data && Array.isArray(data.data) ? data.data : [];
+  return {
+    rows,
+    pageNum: Number((data && data.pageNo) || 1),
+    pageSize: Number((data && data.pageSize) || rows.length),
+    total: Number((data && data.totalCount) || 0),
+  };
+}
+
+function normalizeStock(stock = {}) {
+  return {
+    skuId: stock.skuId === undefined ? undefined : String(stock.skuId),
+    skuName: stock.skuName,
+    merchantSkuId: stock.outerId,
+    stock: Number(stock.stock),
+    totalStock: Number(stock.totalStock),
+  };
+}
+
+function normalizePrice(price = {}) {
+  return {
+    skuId: price.skuId === undefined ? undefined : String(price.skuId),
+    skuName: price.skuName,
+    merchantSkuId: price.outerId,
+    price: Number(price.jdPrice).toFixed(2),
   };
 }
 
 function createJdPlatform(options = {}) {
   const launchContext = createLaunchContext(options);
-  const startLogin = createManualLoginFlow({ launchContext, loginUrl: LOGIN_URL, homeUrl: HOME_URL });
+  const createClient = options.createClient || createJdSffClient;
+  const readbackDelayMs = options.readbackDelayMs ?? READBACK_DELAY_MS;
+  const startLogin = createManualLoginFlow({
+    launchContext,
+    loginUrl: LOGIN_URL,
+    homeUrl: HOME_URL,
+    saveState: (context, store) => context.storageState({ path: authStatePath(store) }),
+    restoreState: restoreSavedState,
+  });
 
-  function attachResponseCapture(page, records) {
-    page.on('response', async (response) => {
-      const request = response.request();
-      if (!['xhr', 'fetch'].includes(request.resourceType()) || !/sff\.jd\.com\/api/.test(response.url())) return;
-      let body = '';
-      try {
-        body = await response.text();
-      } catch (error) {
-        body = `<read failed: ${error.message}>`;
-      }
-      records.push({ status: response.status(), url: response.url(), body: body.slice(0, 12000) });
-    });
-  }
-
-  async function clickQueryButton(page) {
-    try {
-      await page.locator(QUERY_BUTTON_SELECTOR).click({ timeout: 10000 });
-    } catch (_) {
-      await page.getByRole('button', { name: /^查询$/ }).first().click({ timeout: 15000 });
-    }
-  }
-
-  async function fillProductCode(page, itemId) {
-    const formItems = page.locator('form .jd-form-item');
-    await formItems.filter({ hasText: '查询设置' }).getByRole('button', { name: '重置' }).click().catch(() => {});
-    await page.waitForTimeout(1000);
-    const productCodeInput = formItems.nth(3).locator('input').first();
-    await productCodeInput.click({ timeout: 15000 });
-    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
-    await page.keyboard.type(itemId);
-    await productCodeInput.evaluate((element) => {
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-  }
-
-  async function runQueryTest(store, payload) {
-    const { itemId } = payload;
-    const records = [];
+  async function withClient(store, run) {
     const context = await launchContext(store);
-    const page = context.pages()[0] || await context.newPage();
-    attachResponseCapture(page, records);
     try {
+      await restoreSavedState(context, store);
+      const page = context.pages()[0] || await context.newPage();
       await page.goto(WARE_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(8000);
       if (/passport\.shop\.jd\.com/.test(page.url())) {
-        return {
-          ok: false,
-          hit601: false,
-          loginRequired: true,
-          finalUrl: page.url(),
-          title: await page.title().catch(() => ''),
-          recordsCount: records.length,
-        };
+        throw makeError('JD login state expired; run login/start again', 401, 'loginRequired');
       }
-      await page.locator(ALL_WARE_SELECTOR).click({ timeout: 15000 }).catch(() => {});
-      await page.waitForTimeout(3000);
-      await fillProductCode(page, itemId);
-      await clickQueryButton(page);
-      await page.waitForTimeout(8000);
-      const bodyText = await page.locator('body').innerText().catch(() => '');
-      return {
-        ...summarizeQuery(records, bodyText, itemId),
-        itemId,
-        loginRequired: false,
-        finalUrl: page.url(),
-        title: await page.title().catch(() => ''),
-        recordsCount: records.length,
-      };
+      const client = createClient(page);
+      await client.ready();
+      return await run(client, page);
     } finally {
       await context.close().catch(() => {});
     }
   }
 
+  async function queryExactProducts(client, productIds) {
+    const data = await client.queryProducts({ productIds, pageNum: 1, pageSize: 100 });
+    return productPage(data).rows;
+  }
+
+  function requireProduct(rows, productId) {
+    const product = rows.find((row) => String(row.productId) === productId);
+    if (!product) throw makeError(`product ${productId} not found`, 404, 'productNotFound');
+    return product;
+  }
+
+  async function poll(page, read, verify) {
+    let value;
+    for (let attempt = 0; attempt < READBACK_ATTEMPTS; attempt += 1) {
+      value = await read();
+      if (verify(value)) return { verified: true, value };
+      if (attempt + 1 < READBACK_ATTEMPTS && readbackDelayMs > 0) await page.waitForTimeout(readbackDelayMs);
+    }
+    return { verified: false, value };
+  }
+
+  async function runProductQuery(store, payload) {
+    return withClient(store, async (client) => {
+      const page = productPage(await client.queryProducts(payload));
+      return {
+        ok: true,
+        mode: 'api',
+        filters: {
+          productName: payload.productName,
+          skuIds: payload.skuIds,
+          productIds: payload.productIds,
+          itemNum: payload.itemNum,
+        },
+        pageNum: page.pageNum,
+        pageSize: page.pageSize,
+        total: page.total,
+        products: page.rows.map(normalizeProduct),
+        loginRequired: false,
+        riskCheck: { detected: false },
+      };
+    });
+  }
+
+  async function runQueryTest(store, { itemId }) {
+    try {
+      const result = await runProductQuery(store, {
+        productIds: [itemId],
+        skuIds: [],
+        pageNum: 1,
+        pageSize: 10,
+      });
+      return {
+        ok: result.ok,
+        hit601: false,
+        itemId,
+        itemFound: result.products.some((product) => product.productId === itemId),
+        products: result.products,
+        loginRequired: false,
+        mode: 'api',
+      };
+    } catch (error) {
+      if (error.code === 'loginRequired' || error.code === 'jdRiskBlocked') {
+        return {
+          ok: false,
+          hit601: error.code === 'jdRiskBlocked',
+          itemId,
+          itemFound: false,
+          products: [],
+          loginRequired: error.code === 'loginRequired',
+          mode: 'api',
+        };
+      }
+      throw error;
+    }
+  }
+
+  async function runStatusUpdate(store, payload) {
+    return withClient(store, async (client, page) => {
+      const beforeRows = await queryExactProducts(client, payload.productIds);
+      const beforeById = new Map(beforeRows.map((product) => [String(product.productId), product]));
+      const missing = payload.productIds.filter((productId) => !beforeById.has(productId));
+      if (missing.length) throw makeError(`products not found: ${missing.join(', ')}`, 404, 'productNotFound');
+      const unchanged = payload.productIds.filter((productId) => productState(beforeById.get(productId)) === payload.status);
+      const pending = payload.productIds.filter((productId) => !unchanged.includes(productId));
+      if (pending.length) await client.updateStatus(pending, payload.status);
+      const readback = await poll(
+        page,
+        () => queryExactProducts(client, payload.productIds),
+        (rows) => payload.productIds.every((productId) => {
+          const product = rows.find((row) => String(row.productId) === productId);
+          return product && productState(product) === payload.status;
+        }),
+      );
+      const afterById = new Map(readback.value.map((product) => [String(product.productId), product]));
+      const failed = payload.productIds.filter((productId) => productState(afterById.get(productId)) !== payload.status);
+      return {
+        ok: readback.verified,
+        mode: 'api',
+        status: payload.status,
+        updated: pending.filter((productId) => !failed.includes(productId)),
+        unchanged,
+        failed,
+        before: payload.productIds.map((productId) => normalizeProduct(beforeById.get(productId))),
+        after: payload.productIds.map((productId) => normalizeProduct(afterById.get(productId))),
+        verified: readback.verified,
+      };
+    });
+  }
+
+  async function runStockUpdate(store, payload) {
+    return withClient(store, async (client, page) => {
+      requireProduct(await queryExactProducts(client, [payload.productId]), payload.productId);
+      const current = await client.getStocks(payload.productId);
+      const beforeBySku = new Map(current.map((stock) => [String(stock.skuId), stock]));
+      const missing = payload.updates.filter(({ skuId }) => !beforeBySku.has(skuId)).map(({ skuId }) => skuId);
+      if (missing.length) {
+        throw makeError(`SKUs not found in product ${payload.productId}: ${missing.join(', ')}`, 404, 'skuNotFound');
+      }
+      const pending = payload.updates.filter(({ skuId, stock }) => Number(beforeBySku.get(skuId).stock) !== stock);
+      if (pending.length) await client.updateStocks(payload.productId, current, pending);
+      const targets = new Map(payload.updates.map(({ skuId, stock }) => [skuId, stock]));
+      const readback = await poll(
+        page,
+        () => client.getStocks(payload.productId),
+        (stocks) => [...targets].every(([skuId, target]) => {
+          const stock = stocks.find((entry) => String(entry.skuId) === skuId);
+          return stock && Number(stock.stock) === target;
+        }),
+      );
+      return mutationResult(payload, pending, beforeBySku, readback, normalizeStock, 'stock');
+    });
+  }
+
+  async function runPriceUpdate(store, payload) {
+    return withClient(store, async (client, page) => {
+      const product = requireProduct(await queryExactProducts(client, [payload.productId]), payload.productId);
+      const current = await client.queryPrices(product);
+      const beforeBySku = new Map(current.map((price) => [String(price.skuId), price]));
+      const missing = payload.updates.filter(({ skuId }) => !beforeBySku.has(skuId)).map(({ skuId }) => skuId);
+      if (missing.length) {
+        throw makeError(`SKUs not found in product ${payload.productId}: ${missing.join(', ')}`, 404, 'skuNotFound');
+      }
+      const pending = payload.updates.filter(({ skuId, price }) => Number(beforeBySku.get(skuId).jdPrice) !== Number(price));
+      if (pending.length) await client.updatePrices(payload.productId, pending);
+      const targets = new Map(payload.updates.map(({ skuId, price }) => [skuId, Number(price)]));
+      const readback = await poll(
+        page,
+        () => client.queryPrices(product),
+        (prices) => [...targets].every(([skuId, target]) => {
+          const price = prices.find((entry) => String(entry.skuId) === skuId);
+          return price && Number(price.jdPrice) === target;
+        }),
+      );
+      return mutationResult(payload, pending, beforeBySku, readback, normalizePrice, 'jdPrice');
+    });
+  }
+
+  function mutationResult(payload, pending, beforeBySku, readback, normalize, sourceField) {
+    const afterBySku = new Map(readback.value.map((value) => [String(value.skuId), value]));
+    const payloadField = sourceField === 'jdPrice' ? 'price' : 'stock';
+    const failed = payload.updates.filter((update) => (
+      Number(afterBySku.get(update.skuId) && afterBySku.get(update.skuId)[sourceField])
+        !== Number(update[payloadField])
+    )).map(({ skuId }) => skuId);
+    const pendingIds = pending.map(({ skuId }) => skuId);
+    return {
+      ok: readback.verified,
+      mode: 'api',
+      productId: payload.productId,
+      updated: pendingIds.filter((skuId) => !failed.includes(skuId)),
+      unchanged: payload.updates.map(({ skuId }) => skuId).filter((skuId) => !pendingIds.includes(skuId)),
+      failed,
+      before: payload.updates.map(({ skuId }) => normalize(beforeBySku.get(skuId))),
+      after: payload.updates.map(({ skuId }) => normalize(afterBySku.get(skuId))),
+      verified: readback.verified,
+    };
+  }
+
   return {
     platform: 'jd',
     startLogin,
-    actions: { 'query-test': createQueryTestAction(runQueryTest) },
+    actions: {
+      'query-test': createQueryTestAction(runQueryTest),
+      'query-products': createProductQueryAction(runProductQuery),
+      'update-product-status': createProductStatusAction(runStatusUpdate),
+      'update-sku-stock': createSkuStockAction(runStockUpdate),
+      'update-sku-price': createSkuPriceAction(runPriceUpdate),
+    },
   };
 }
 
-module.exports = { createJdPlatform, responseHas601, summarizeQuery };
+module.exports = {
+  createJdPlatform,
+  normalizePrice,
+  normalizeProduct,
+  normalizeStock,
+  productPage,
+  productState,
+};

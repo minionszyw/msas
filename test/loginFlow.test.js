@@ -37,11 +37,14 @@ async function assertLoginReuse(createPlatform, profileDir, urls) {
   assert.deepEqual(visitedUrls, [urls.login, urls.home]);
 }
 
-test('jd login closes its headed context then verifies the profile headlessly', async () => {
-  await assertLoginReuse(createJdPlatform, '/profiles/shop_a', {
+test('jd login saves cookies, closes its headed context, and verifies the profile headlessly', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jd-login-'));
+  const profileDir = path.join(root, 'shop_a');
+  await assertLoginReuse(createJdPlatform, profileDir, {
     login: 'https://passport.shop.jd.com/login/index.action/jdm',
     home: 'https://shop.jd.com/jdm/home',
   });
+  assert.equal(fs.existsSync(path.join(profileDir, 'auth-state.json')), true);
 });
 
 test('tb login saves cookies before verifying the same profile headlessly', async () => {
@@ -64,7 +67,8 @@ test('login reports failed reuse verification and skips it when manual login fai
       };
     })(),
   });
-  const failed = await failedReuse.startLogin({ profileDir: '/profiles/a' }, { timeoutMs: 1 });
+  const failedProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'jd-failed-reuse-'));
+  const failed = await failedReuse.startLogin({ profileDir: failedProfile }, { timeoutMs: 1 });
   assert.equal(failed.ok, false);
   assert.equal(failed.reuseCheck.loginRequired, null);
   assert.match(failed.reuseCheck.error, /verification launch failed/);
@@ -88,8 +92,9 @@ test('login marks a redirected reuse check as expired', async () => {
     createFakeContext(createFakePage('https://passport.shop.jd.com/login/index.action/jdm')),
   ];
   const platform = createJdPlatform({ launchPersistentContext: async () => contexts.shift() });
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jd-redirected-reuse-'));
 
-  const result = await platform.startLogin({ profileDir: '/profiles/shop_a' }, { timeoutMs: 1 });
+  const result = await platform.startLogin({ profileDir }, { timeoutMs: 1 });
 
   assert.equal(result.ok, false);
   assert.equal(result.loginPageOk, true);
