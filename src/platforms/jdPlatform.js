@@ -1,5 +1,3 @@
-const fs = require('fs');
-const path = require('path');
 const { makeError } = require('../errors');
 const { createLaunchContext } = require('./browserContext');
 const { createJdSffClient } = require('./jdSff');
@@ -10,33 +8,14 @@ const {
   createSkuPriceAction,
   createSkuStockAction,
 } = require('./productActions');
-const { createQueryTestAction, parseJsonMaybe } = require('./platformUtils');
+const { createQueryTestAction } = require('./platformUtils');
+const { restoreAuthState, saveAuthState } = require('./profileAuthState');
 
 const LOGIN_URL = 'https://passport.shop.jd.com/login/index.action/jdm';
 const HOME_URL = 'https://shop.jd.com/jdm/home';
 const WARE_LIST_URL = 'https://wares-jdm.jd.com/ware/wareList?activeTab=OnsaleWare&businessModel=0';
 const READBACK_ATTEMPTS = 3;
 const READBACK_DELAY_MS = 1500;
-
-function authStatePath(store) {
-  return path.join(store.profileDir, 'auth-state.json');
-}
-
-async function restoreSavedState(context, store) {
-  if (!fs.existsSync(authStatePath(store))) return false;
-  const state = parseJsonMaybe(fs.readFileSync(authStatePath(store), 'utf8'));
-  const cookies = state && Array.isArray(state.cookies) ? state.cookies : [];
-  const origins = state && Array.isArray(state.origins) ? state.origins : [];
-  if (cookies.length) await context.addCookies(cookies);
-  if (origins.length) {
-    await context.addInitScript((savedOrigins) => {
-      const saved = savedOrigins.find(({ origin }) => origin === window.location.origin);
-      if (!saved || !Array.isArray(saved.localStorage)) return;
-      for (const { name, value } of saved.localStorage) window.localStorage.setItem(name, value);
-    }, origins);
-  }
-  return cookies.length > 0 || origins.length > 0;
-}
 
 function productState(product) {
   const state = product && product.productStatusVO && Number(product.productStatusVO.productState);
@@ -100,22 +79,42 @@ function createJdPlatform(options = {}) {
     launchContext,
     loginUrl: LOGIN_URL,
     homeUrl: HOME_URL,
-    saveState: (context, store) => context.storageState({ path: authStatePath(store) }),
-    restoreState: restoreSavedState,
+    saveState: saveAuthState,
+    restoreState: restoreAuthState,
   });
 
   async function withClient(store, run) {
     const context = await launchContext(store);
     try {
-      await restoreSavedState(context, store);
       const page = context.pages()[0] || await context.newPage();
-      await page.goto(WARE_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      if (/passport\.shop\.jd\.com/.test(page.url())) {
-        throw makeError('JD login state expired; run login/start again', 401, 'loginRequired');
+      let restored = false;
+
+      async function openClient() {
+        await page.goto(WARE_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        if (/passport\.shop\.jd\.com/.test(page.url()) && !restored && await restoreAuthState(context, store)) {
+          restored = true;
+          await page.goto(WARE_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        }
+        if (/passport\.shop\.jd\.com/.test(page.url())) {
+          throw makeError('JD login state expired; run login/start again', 401, 'loginRequired');
+        }
+        const client = createClient(page);
+        await client.ready();
+        return client;
       }
-      const client = createClient(page);
-      await client.ready();
-      return await run(client, page);
+
+      let client = await openClient();
+      let result;
+      try {
+        result = await run(client, page);
+      } catch (error) {
+        if (error.code !== 'loginRequired' || restored || !await restoreAuthState(context, store)) throw error;
+        restored = true;
+        client = await openClient();
+        result = await run(client, page);
+      }
+      await saveAuthState(context, store);
+      return result;
     } finally {
       await context.close().catch(() => {});
     }
@@ -221,10 +220,12 @@ function createJdPlatform(options = {}) {
         mode: 'api',
         status: payload.status,
         updated: pending.filter((productId) => !failed.includes(productId)),
-        unchanged,
+        unchanged: unchanged.filter((productId) => !failed.includes(productId)),
         failed,
         before: payload.productIds.map((productId) => normalizeProduct(beforeById.get(productId))),
-        after: payload.productIds.map((productId) => normalizeProduct(afterById.get(productId))),
+        after: payload.productIds.map((productId) => (
+          afterById.has(productId) ? normalizeProduct(afterById.get(productId)) : null
+        )),
         verified: readback.verified,
       };
     });
@@ -291,10 +292,14 @@ function createJdPlatform(options = {}) {
       mode: 'api',
       productId: payload.productId,
       updated: pendingIds.filter((skuId) => !failed.includes(skuId)),
-      unchanged: payload.updates.map(({ skuId }) => skuId).filter((skuId) => !pendingIds.includes(skuId)),
+      unchanged: payload.updates
+        .map(({ skuId }) => skuId)
+        .filter((skuId) => !pendingIds.includes(skuId) && !failed.includes(skuId)),
       failed,
       before: payload.updates.map(({ skuId }) => normalize(beforeBySku.get(skuId))),
-      after: payload.updates.map(({ skuId }) => normalize(afterBySku.get(skuId))),
+      after: payload.updates.map(({ skuId }) => (
+        afterBySku.has(skuId) ? normalize(afterBySku.get(skuId)) : null
+      )),
       verified: readback.verified,
     };
   }

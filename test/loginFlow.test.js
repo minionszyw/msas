@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const { createJdPlatform } = require('../src/platforms/jdPlatform');
 const { createTbPlatform } = require('../src/platforms/tbPlatform');
+const { createManualLoginFlow } = require('../src/platforms/loginFlow');
 const { createFakeContext, createFakePage } = require('./helpers/browserFakes.cjs');
 
 async function assertLoginReuse(createPlatform, profileDir, urls) {
@@ -100,4 +101,38 @@ test('login marks a redirected reuse check as expired', async () => {
   assert.equal(result.loginPageOk, true);
   assert.equal(result.reuseCheck.ok, false);
   assert.equal(result.reuseCheck.loginRequired, true);
+});
+
+test('reuse verification restores a snapshot only after the persistent profile fails', async () => {
+  let restored = false;
+  let restoreCalls = 0;
+  let verificationNavigations = 0;
+  const manualPage = createFakePage('https://example.com/home');
+  const verificationPage = {
+    goto: async () => { verificationNavigations += 1; },
+    waitForTimeout: async () => {},
+    title: async () => '',
+    url: () => (restored ? 'https://example.com/home' : 'https://example.com/login'),
+  };
+  const contexts = [
+    createFakeContext(manualPage),
+    createFakeContext(verificationPage),
+  ];
+  const login = createManualLoginFlow({
+    launchContext: async () => contexts.shift(),
+    loginUrl: 'https://example.com/login',
+    homeUrl: 'https://example.com/home',
+    saveState: async () => {},
+    restoreState: async () => {
+      restoreCalls += 1;
+      restored = true;
+      return true;
+    },
+  });
+
+  const result = await login({ profileDir: '/unused' }, { timeoutMs: 1 });
+
+  assert.equal(result.ok, true);
+  assert.equal(restoreCalls, 1);
+  assert.equal(verificationNavigations, 2);
 });

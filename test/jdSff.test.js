@@ -15,6 +15,13 @@ function createPage(respond = () => ({ code: 200, data: {} })) {
   };
 }
 
+function createRawPage(response) {
+  return {
+    waitForFunction: async () => {},
+    evaluate: async () => response,
+  };
+}
+
 test('JD SFF client maps query filters without exposing or accepting DOM selectors', async () => {
   const page = createPage(() => ({ code: 200, data: { data: [] } }));
   const client = createJdSffClient(page);
@@ -74,4 +81,31 @@ test('JD SFF client classifies login, risk, and general API failures', async () 
   await assert.rejects(() => login.queryProducts({}), (error) => error.code === 'loginRequired');
   await assert.rejects(() => risk.queryProducts({}), (error) => error.code === 'jdRiskBlocked');
   await assert.rejects(() => general.queryProducts({}), (error) => error.code === 'jdApiFailed');
+});
+
+test('JD SFF client classifies status-only authentication failures and invalid protocol data', async () => {
+  const unauthorized = createJdSffClient(createRawPage({ status: 401, body: 'unauthorized' }));
+  const forbidden = createJdSffClient(createRawPage({ status: 403, body: '{"code":500,"msg":"失败"}' }));
+  const invalidJson = createJdSffClient(createRawPage({ status: 200, body: '<html>unexpected</html>' }));
+  const invalidQuery = createJdSffClient(createRawPage({ status: 200, body: '{"code":200,"data":{}}' }));
+  const invalidStocks = createJdSffClient(createRawPage({ status: 200, body: '{"code":200,"data":{}}' }));
+
+  await assert.rejects(() => unauthorized.queryProducts({}), (error) => error.code === 'loginRequired');
+  await assert.rejects(() => forbidden.queryProducts({}), (error) => error.code === 'loginRequired');
+  await assert.rejects(() => invalidJson.queryProducts({}), (error) => error.code === 'jdProtocolInvalid');
+  await assert.rejects(() => invalidQuery.queryProducts({}), (error) => error.code === 'jdProtocolInvalid');
+  await assert.rejects(() => invalidStocks.getStocks('100'), (error) => error.code === 'jdProtocolInvalid');
+});
+
+test('JD SFF client bounds stalled page requests', async () => {
+  const page = {
+    waitForFunction: async () => {},
+    evaluate: async () => new Promise(() => {}),
+  };
+  const client = createJdSffClient(page, { requestTimeoutMs: 5 });
+
+  await assert.rejects(
+    () => client.queryProducts({}),
+    (error) => error.code === 'jdApiTimeout' && error.status === 504,
+  );
 });

@@ -1,9 +1,7 @@
-const fs = require('fs');
-const path = require('path');
-const { makeError } = require('../errors');
 const { createLaunchContext } = require('./browserContext');
 const { createManualLoginFlow } = require('./loginFlow');
 const { createQueryTestAction, parseJsonMaybe } = require('./platformUtils');
+const { restoreAuthState, saveAuthState } = require('./profileAuthState');
 const {
   QUERY_API_ORIGIN,
   createMtopUrl,
@@ -19,17 +17,6 @@ const HOME_URL = 'https://myseller.taobao.com/home.htm/QnworkbenchHome/';
 const SELL_MANAGE_URL = 'https://myseller.taobao.com/home.htm/SellManage/all';
 const LOGIN_SETTLE_MS = 6000;
 
-function authStatePath(store) {
-  return path.join(store.profileDir, 'auth-state.json');
-}
-
-async function restoreSavedCookies(context, store) {
-  const state = parseJsonMaybe(fs.readFileSync(authStatePath(store), 'utf8'));
-  const cookies = state && Array.isArray(state.cookies) ? state.cookies : [];
-  if (cookies.length) await context.addCookies(cookies);
-  return cookies.length;
-}
-
 function createTbPlatform(options = {}) {
   const launchContext = createLaunchContext(options);
   const startLogin = createManualLoginFlow({
@@ -37,8 +24,8 @@ function createTbPlatform(options = {}) {
     loginUrl: LOGIN_URL,
     homeUrl: HOME_URL,
     settleMs: LOGIN_SETTLE_MS,
-    saveState: (context, store) => context.storageState({ path: authStatePath(store) }),
-    restoreState: restoreSavedCookies,
+    saveState: saveAuthState,
+    restoreState: restoreAuthState,
   });
 
   async function sendMtopRequest(context, page, data, records) {
@@ -75,36 +62,55 @@ function createTbPlatform(options = {}) {
   async function runQueryTest(store, payload) {
     const { itemId } = payload;
     const records = [];
-    if (!fs.existsSync(authStatePath(store))) {
-      throw makeError('login state not found; run login/start first', 401, 'loginRequired');
-    }
     const context = await launchContext(store);
     try {
-      await restoreSavedCookies(context, store);
       const page = context.pages()[0] || await context.newPage();
       await page.goto(SELL_MANAGE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.waitForTimeout(5000);
+      let restored = false;
       if (/loginmyseller\.taobao\.com|login\.taobao\.com/.test(page.url())) {
-        return {
-          ok: false,
-          itemFound: false,
-          itemId,
-          loginRequired: true,
-          riskCheck: { detected: false, ret: [] },
-          mode: 'api',
-          finalUrl: page.url(),
-          title: await page.title().catch(() => ''),
-          recordsCount: 0,
-        };
+        if (await restoreAuthState(context, store)) {
+          restored = true;
+          await page.goto(SELL_MANAGE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          await page.waitForTimeout(5000);
+        }
+        if (/loginmyseller\.taobao\.com|login\.taobao\.com/.test(page.url())) {
+          return {
+            ok: false,
+            itemFound: false,
+            itemId,
+            loginRequired: true,
+            riskCheck: { detected: false, ret: [] },
+            mode: 'api',
+            finalUrl: page.url(),
+            title: await page.title().catch(() => ''),
+            recordsCount: 0,
+          };
+        }
       }
       await callMtop(context, page, itemId, records);
-      return {
+      let result = {
         ...summarizeQueryResponse(records, itemId),
         mode: 'api',
         finalUrl: page.url(),
         title: await page.title().catch(() => ''),
         recordsCount: records.length,
       };
+      if (result.loginRequired && !restored && await restoreAuthState(context, store)) {
+        restored = true;
+        await page.goto(SELL_MANAGE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.waitForTimeout(5000);
+        await callMtop(context, page, itemId, records);
+        result = {
+          ...summarizeQueryResponse(records, itemId),
+          mode: 'api',
+          finalUrl: page.url(),
+          title: await page.title().catch(() => ''),
+          recordsCount: records.length,
+        };
+      }
+      if (result.ok) await saveAuthState(context, store);
+      return result;
     } finally {
       await context.close().catch(() => {});
     }

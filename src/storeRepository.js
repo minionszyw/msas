@@ -1,10 +1,19 @@
 const fs = require('fs');
 const path = require('path');
 const { makeError } = require('./errors');
+const { ensurePrivateDirectory } = require('./privateStorage');
 const { SUPPORTED_PLATFORMS } = require('./platforms/registry');
 
 function ensureDir(directory) {
   fs.mkdirSync(directory, { recursive: true });
+}
+
+function ensurePrivateDir(directory) {
+  try {
+    ensurePrivateDirectory(directory);
+  } catch (_) {
+    throw makeError('cannot prepare the store browser profile', 500, 'profileUnavailable');
+  }
 }
 
 function sanitizeStoreId(storeId) {
@@ -112,7 +121,7 @@ function createStoreRepository(options) {
     } else {
       stores[storeId] = { ...stores[storeId], name: name || stores[storeId].name, updatedAt: timestamp };
     }
-    ensureDir(stores[storeId].profileDir);
+    ensurePrivateDir(stores[storeId].profileDir);
     save();
     return stores[storeId];
   }
@@ -125,7 +134,7 @@ function createStoreRepository(options) {
       const suffix = platform ? ` for platform ${platform}` : '';
       throw makeError(`store ${storeId} not found${suffix}`, 404, 'storeNotFound');
     }
-    ensureDir(store.profileDir);
+    ensurePrivateDir(store.profileDir);
     return store;
   }
 

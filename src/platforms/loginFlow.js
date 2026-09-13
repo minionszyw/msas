@@ -21,11 +21,15 @@ function createManualLoginFlow(options) {
   async function verifySavedLogin(store) {
     const context = await launchContext(store, true);
     try {
-      await restoreState(context, store);
       const page = context.pages()[0] || await context.newPage();
       await page.goto(homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.waitForTimeout(2000);
-      const summary = await getPageSummary(page);
+      let summary = await getPageSummary(page);
+      if (!isLoggedIn(summary.finalUrl) && await restoreState(context, store)) {
+        await page.goto(homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.waitForTimeout(2000);
+        summary = await getPageSummary(page);
+      }
       const ok = isLoggedIn(summary.finalUrl);
       return { ok, loginRequired: !ok, ...summary };
     } finally {

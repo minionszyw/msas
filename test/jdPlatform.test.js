@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { createJdPlatform } = require('../src/platforms/jdPlatform');
 
 const PRODUCT_ID = '100';
@@ -24,6 +27,7 @@ function createHarness(options = {}) {
   const state = {
     status: 'online',
     stock: 8,
+    secondStock: 10,
     price: 5.2,
     calls: [],
   };
@@ -35,6 +39,7 @@ function createHarness(options = {}) {
   const context = {
     pages: () => [page],
     newPage: async () => page,
+    storageState: async () => ({ cookies: [], origins: [] }),
     close: async () => {},
   };
   const client = {
@@ -45,7 +50,10 @@ function createHarness(options = {}) {
       pageSize: 10,
       totalCount: 1,
     }),
-    getStocks: async () => [{ skuId: Number(SKU_ID), skuName: '规格', outerId: 'X', stock: state.stock, totalStock: state.stock }],
+    getStocks: async () => [
+      { skuId: Number(SKU_ID), skuName: '规格', outerId: 'X', stock: state.stock, totalStock: state.stock },
+      ...(options.secondSku ? [{ skuId: 201, skuName: '规格2', outerId: 'Y', stock: state.secondStock, totalStock: state.secondStock }] : []),
+    ],
     queryPrices: async () => [{ skuId: Number(SKU_ID), skuName: '规格', outerId: 'X', jdPrice: state.price }],
     updateStatus: async (ids, status) => {
       state.calls.push(['status', ids, status]);
@@ -53,7 +61,10 @@ function createHarness(options = {}) {
     },
     updateStocks: async (_productId, _current, updates) => {
       state.calls.push(['stock', updates]);
-      if (!options.ignoreStockWrites) state.stock = updates[0].stock;
+      for (const update of updates) {
+        if (update.skuId === SKU_ID && !options.ignoreStockWrites) state.stock = update.stock;
+        if (update.skuId === '201' && !options.ignoreSecondStockWrite) state.secondStock = update.stock;
+      }
     },
     updatePrices: async (_productId, updates) => {
       state.calls.push(['price', updates]);
@@ -72,7 +83,8 @@ function createHarness(options = {}) {
 async function runAction(platform, name, payload) {
   const action = platform.actions[name];
   const normalized = action.validate(payload);
-  return action.run({ profileDir: '/tmp/profile' }, normalized);
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jd-action-'));
+  return action.run({ profileDir }, normalized);
 }
 
 test('JD product query and query-test use only the API client', async () => {
@@ -134,5 +146,21 @@ test('JD mutations fail verification when API readback does not contain the targ
 
   assert.equal(result.ok, false);
   assert.equal(result.verified, false);
+  assert.deepEqual(result.updated, []);
+  assert.deepEqual(result.unchanged, []);
   assert.deepEqual(result.failed, [SKU_ID]);
+});
+
+test('JD batch mutation reports disjoint partial-success results after readback', async () => {
+  const { platform } = createHarness({ secondSku: true, ignoreSecondStockWrite: true });
+  const result = await runAction(platform, 'update-sku-stock', {
+    productId: PRODUCT_ID,
+    updates: [{ skuId: SKU_ID, stock: 9 }, { skuId: '201', stock: 11 }],
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.updated, [SKU_ID]);
+  assert.deepEqual(result.unchanged, []);
+  assert.deepEqual(result.failed, ['201']);
+  assert.equal(new Set([...result.updated, ...result.unchanged, ...result.failed]).size, 2);
 });

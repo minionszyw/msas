@@ -5,6 +5,7 @@ const SFF_ORIGIN = 'https://sff.jd.com';
 const SFF_APP_ID = '3MC69M4R3HFKCQ4S01DN';
 const SFF_SIGN_APP_ID = '0248a';
 const SFF_VERSION = '1.0';
+const REQUEST_TIMEOUT_MS = 30000;
 
 const APIS = Object.freeze({
   queryProducts: 'dsm.product.manage.ProductInfoReadViewService.queryValidProductList',
@@ -38,79 +39,119 @@ function responseError(api, response) {
   if (response.status === 601 || code === 601 || code === 312 || /未经京东授权|网络环境较差/.test(message)) {
     return makeError(`JD API security check failed (${code || response.status})`, 502, 'jdRiskBlocked');
   }
-  if (/登录|授权|login|auth/i.test(message)) return makeError('JD login state expired; run login/start again', 401, 'loginRequired');
+  if ([401, 403].includes(Number(response.status))
+    || [401, 403].includes(code)
+    || /登录|授权|login|auth/i.test(message)) {
+    return makeError('JD login state expired; run login/start again', 401, 'loginRequired');
+  }
   return makeError(`JD API ${api} failed: ${message}`, 502, 'jdApiFailed');
 }
 
-function unwrap(api, response) {
+function protocolError(api) {
+  return makeError(`JD API ${api} returned an invalid response`, 502, 'jdProtocolInvalid');
+}
+
+function unwrap(api, response, validateData = () => true) {
   const json = parseJsonMaybe(response.body || '');
+  if (response.status === 200 && !json) throw protocolError(api);
   if (response.status !== 200 || !json || Number(json.code) !== 200) throw responseError(api, response);
+  if (!validateData(json.data)) throw protocolError(api);
   return json.data;
 }
 
-function createJdSffClient(page) {
+function withTimeout(operation, timeoutMs) {
+  let timeout;
+  const deadline = new Promise((_, reject) => {
+    timeout = setTimeout(() => reject(makeError('JD API request timed out', 504, 'jdApiTimeout')), timeoutMs);
+  });
+  return Promise.race([operation, deadline]).finally(() => clearTimeout(timeout));
+}
+
+function createJdSffClient(page, options = {}) {
+  const requestTimeoutMs = options.requestTimeoutMs || REQUEST_TIMEOUT_MS;
+
   async function ready() {
-    await page.waitForFunction(() => (
-      typeof window.ParamsSign === 'function'
-      && window.CryptoJS
-      && typeof window.getJsToken === 'function'
-    ), null, { timeout: 30000 });
+    try {
+      await page.waitForFunction(() => (
+        typeof window.ParamsSign === 'function'
+        && window.CryptoJS
+        && typeof window.getJsToken === 'function'
+      ), null, { timeout: REQUEST_TIMEOUT_MS });
+    } catch (_) {
+      throw makeError('JD security SDK is unavailable', 502, 'jdProtocolInvalid');
+    }
   }
 
-  async function call(api, body) {
-    const response = await page.evaluate(async (request) => {
-      const data = JSON.stringify(request.body);
-      const hash = window.CryptoJS.SHA256(data).toString().toUpperCase();
-      const signer = new window.ParamsSign({
-        appId: request.signAppId,
-        preRequest: false,
-        debug: false,
-        onSign() {},
-      });
-      const signed = await signer.sign({
-        body: hash,
-        appId: request.appId,
-        api: request.api,
-        v: request.version,
-      });
-      const eid = await new Promise((resolve) => {
-        let settled = false;
-        const finish = (value) => {
-          if (settled) return;
-          settled = true;
-          resolve(value || '');
-        };
+  async function call(api, body, validateData) {
+    let response;
+    try {
+      response = await withTimeout(page.evaluate(async (request) => {
+        const controller = new AbortController();
+        const abortTimer = window.setTimeout(() => controller.abort(), request.timeoutMs);
         try {
-          window.getJsToken((result) => finish(result && result.jsToken), 1000);
-          window.setTimeout(() => finish(''), 1500);
-        } catch (_) {
-          finish('');
+          const data = JSON.stringify(request.body);
+          const hash = window.CryptoJS.SHA256(data).toString().toUpperCase();
+          const signer = new window.ParamsSign({
+            appId: request.signAppId,
+            preRequest: false,
+            debug: false,
+            onSign() {},
+          });
+          const signed = await signer.sign({
+            body: hash,
+            appId: request.appId,
+            api: request.api,
+            v: request.version,
+          });
+          const eid = await new Promise((resolve) => {
+            let settled = false;
+            const finish = (value) => {
+              if (settled) return;
+              settled = true;
+              resolve(value || '');
+            };
+            try {
+              window.getJsToken((result) => finish(result && result.jsToken), 1000);
+              window.setTimeout(() => finish(''), 1500);
+            } catch (_) {
+              finish('');
+            }
+          });
+          const url = `${request.origin}/api?v=${request.version}&appId=${request.appId}&api=${encodeURIComponent(request.api)}`;
+          const result = await fetch(url, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              accept: 'application/json',
+              'content-type': 'application/json',
+              'dsm-eid': eid,
+              'dsm-platform': 'pc',
+              h5st: encodeURI((signed && signed.h5st) || ''),
+              'x-requested-with': 'XMLHttpRequest',
+            },
+            body: data,
+            signal: controller.signal,
+          });
+          return { status: result.status, body: await result.text() };
+        } finally {
+          window.clearTimeout(abortTimer);
         }
-      });
-      const url = `${request.origin}/api?v=${request.version}&appId=${request.appId}&api=${encodeURIComponent(request.api)}`;
-      const result = await fetch(url, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          accept: 'application/json',
-          'content-type': 'application/json',
-          'dsm-eid': eid,
-          'dsm-platform': 'pc',
-          h5st: encodeURI((signed && signed.h5st) || ''),
-          'x-requested-with': 'XMLHttpRequest',
-        },
-        body: data,
-      });
-      return { status: result.status, body: await result.text() };
-    }, {
-      api,
-      body,
-      origin: SFF_ORIGIN,
-      appId: SFF_APP_ID,
-      signAppId: SFF_SIGN_APP_ID,
-      version: SFF_VERSION,
-    });
-    return unwrap(api, response);
+      }, {
+        api,
+        body,
+        origin: SFF_ORIGIN,
+        appId: SFF_APP_ID,
+        signAppId: SFF_SIGN_APP_ID,
+        version: SFF_VERSION,
+        timeoutMs: requestTimeoutMs,
+      }), requestTimeoutMs);
+    } catch (error) {
+      if (error.code === 'jdApiTimeout' || /AbortError|aborted/i.test(error.message || '')) {
+        throw makeError('JD API request timed out', 504, 'jdApiTimeout');
+      }
+      throw makeError('JD API request could not be completed', 502, 'jdApiFailed');
+    }
+    return unwrap(api, response, validateData);
   }
 
   function queryProducts(filters) {
@@ -154,14 +195,14 @@ function createJdSffClient(page) {
         pageSize: filters.pageSize || 10,
       },
       accessContext: accessContext(),
-    });
+    }, (data) => data && typeof data === 'object' && Array.isArray(data.data));
   }
 
   function getStocks(productId) {
     return call(APIS.getStocks, {
       accessContext: accessContext(true),
       skuStockListQuery: { wareId: jdNumber(productId, 'ProductId'), channelType: 0 },
-    });
+    }, Array.isArray);
   }
 
   function queryPrices(product) {
@@ -179,7 +220,7 @@ function createJdSffClient(page) {
         }],
       },
       accessContext: accessContext(),
-    });
+    }, Array.isArray);
   }
 
   function updateStatus(productIds, status) {

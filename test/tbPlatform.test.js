@@ -72,13 +72,14 @@ test('tb query retries after token bootstrap with browser fetch and no DOM locat
     pages: () => [page],
     newPage: async () => page,
     addCookies: async () => {},
+    storageState: async () => ({ cookies: [], origins: [] }),
     close: async () => { closed = true; },
   };
   const platform = createTbPlatform({ launchPersistentContext: async () => context });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-query-'));
   const profileDir = path.join(root, 'tb_a');
   fs.mkdirSync(profileDir, { recursive: true });
-  fs.writeFileSync(path.join(profileDir, 'auth-state.json'), JSON.stringify({ cookies: [] }));
+  fs.writeFileSync(path.join(profileDir, 'auth-state.json'), JSON.stringify({ cookies: [], origins: [] }));
 
   const result = await platform.actions['query-test'].run({ profileDir }, { itemId });
 

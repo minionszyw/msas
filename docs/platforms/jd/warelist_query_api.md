@@ -10,7 +10,7 @@
 - 价格读取/写入：`querySkuPrice` / `updatePrices`
 - 状态写入：`updateProductStatus`
 
-首次登录使用 persistent context。登录窗口进入京东首页并关闭后，服务使用同一 `profiles/<storeId>` 启动无头 context，再次访问首页验证登录态复用。
+首次登录使用 persistent context。登录窗口进入京东首页并关闭后，服务使用同一 `profiles/<storeId>` 启动无头 context，再次访问首页验证登录态复用。新 context 优先使用 persistent profile；确认登录失效后才恢复同目录的安全快照，成功请求后刷新快照。
 
 业务动作只导航到商品列表页以加载京东安全 SDK，随后在页面环境生成 H5ST 和 EID 并直接请求 SFF API。裸 `fetch` 会返回 `code: 312`，因此签名步骤不可省略。签名、EID、Cookie 和原始响应不得进入任务结果或日志。
 
@@ -47,6 +47,6 @@
 
 ## 响应与风控判断
 
-成功要求目标 API 返回 HTTP 200 且 JSON `code` 为 200。adapter 将 HTTP/JSON 601、312、“未经京东授权”和“网络环境较差”识别为风控，将登录或授权提示识别为登录态失效。
+成功要求目标 API 返回 HTTP 200、JSON `code` 为 200，并符合对应接口的最小数据结构。adapter 将 HTTP/JSON 601、312、“未经京东授权”和“网络环境较差”识别为风控，将 HTTP/JSON 401、403 和登录提示识别为登录态失效。SFF 调用固定 30 秒超时；超时和异常响应分别返回 `jdApiTimeout`、`jdProtocolInvalid`。
 
 任务结果通过 `ok` 表示查询是否成功且未命中风控，`hit601` 表示是否检测到风控，`loginRequired` 表示 persistent profile 的登录态是否失效。
