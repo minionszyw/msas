@@ -1,3 +1,5 @@
+const { createBrowserSessionManager } = require('../browserSessionManager');
+const { makeError } = require('../errors');
 const { createLaunchContext } = require('./browserContext');
 const { createManualLoginFlow } = require('./loginFlow');
 const { createQueryTestAction, parseJsonMaybe } = require('./platformUtils');
@@ -19,7 +21,8 @@ const LOGIN_SETTLE_MS = 6000;
 
 function createTbPlatform(options = {}) {
   const launchContext = createLaunchContext(options);
-  const startLogin = createManualLoginFlow({
+  const sessionManager = options.sessionManager || createBrowserSessionManager();
+  const runManualLogin = createManualLoginFlow({
     launchContext,
     loginUrl: LOGIN_URL,
     homeUrl: HOME_URL,
@@ -27,6 +30,45 @@ function createTbPlatform(options = {}) {
     saveState: saveAuthState,
     restoreState: restoreAuthState,
   });
+
+  async function createSession(store, restoreFirst = false) {
+    const context = await launchContext(store);
+    try {
+      const page = context.pages()[0] || await context.newPage();
+      if (restoreFirst) await restoreAuthState(context, store);
+      await page.goto(SELL_MANAGE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(5000);
+      if (/loginmyseller\.taobao\.com|login\.taobao\.com/.test(page.url()) && await restoreAuthState(context, store)) {
+        await page.goto(SELL_MANAGE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.waitForTimeout(5000);
+      }
+      if (/loginmyseller\.taobao\.com|login\.taobao\.com/.test(page.url())) {
+        throw makeError('Taobao login state expired; run login/start again', 401, 'loginRequired');
+      }
+      return {
+        context,
+        page,
+        mode: options.headed === false ? 'headless' : 'headed',
+        isUsable: () => typeof page.isClosed !== 'function' || !page.isClosed(),
+        ensureReady: async () => {
+          if (!/^https:\/\/myseller\.taobao\.com\/home\.htm\/SellManage\//.test(page.url())) {
+            await page.goto(SELL_MANAGE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.waitForTimeout(5000);
+          }
+          if (/loginmyseller\.taobao\.com|login\.taobao\.com/.test(page.url())) {
+            throw makeError('Taobao login state expired; run login/start again', 401, 'loginRequired');
+          }
+        },
+        close: async ({ persist = true } = {}) => {
+          if (persist) await saveAuthState(context, store).catch(() => {});
+          await context.close().catch(() => {});
+        },
+      };
+    } catch (error) {
+      await context.close().catch(() => {});
+      throw error;
+    }
+  }
 
   async function sendMtopRequest(context, page, data, records) {
     const cookies = await context.cookies([QUERY_API_ORIGIN]);
@@ -61,64 +103,49 @@ function createTbPlatform(options = {}) {
 
   async function runQueryTest(store, payload) {
     const { itemId } = payload;
-    const records = [];
-    const context = await launchContext(store);
     try {
-      const page = context.pages()[0] || await context.newPage();
-      await page.goto(SELL_MANAGE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(5000);
-      let restored = false;
-      if (/loginmyseller\.taobao\.com|login\.taobao\.com/.test(page.url())) {
-        if (await restoreAuthState(context, store)) {
-          restored = true;
-          await page.goto(SELL_MANAGE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-          await page.waitForTimeout(5000);
-        }
-        if (/loginmyseller\.taobao\.com|login\.taobao\.com/.test(page.url())) {
-          return {
-            ok: false,
-            itemFound: false,
-            itemId,
-            loginRequired: true,
-            riskCheck: { detected: false, ret: [] },
+      const execute = (restoreFirst = false) => sessionManager.use(
+        store,
+        (target) => createSession(target, restoreFirst),
+        async ({ context, ensureReady, page }) => {
+          await ensureReady();
+          const records = [];
+          await callMtop(context, page, itemId, records);
+          const result = {
+            ...summarizeQueryResponse(records, itemId),
             mode: 'api',
             finalUrl: page.url(),
             title: await page.title().catch(() => ''),
-            recordsCount: 0,
+            recordsCount: records.length,
           };
-        }
+          if (result.ok) await saveAuthState(context, store);
+          return result;
+        },
+      );
+      let result = await execute();
+      if (result.loginRequired) {
+        await sessionManager.close(store, { persist: false });
+        result = await execute(true);
       }
-      await callMtop(context, page, itemId, records);
-      let result = {
-        ...summarizeQueryResponse(records, itemId),
-        mode: 'api',
-        finalUrl: page.url(),
-        title: await page.title().catch(() => ''),
-        recordsCount: records.length,
-      };
-      if (result.loginRequired && !restored && await restoreAuthState(context, store)) {
-        restored = true;
-        await page.goto(SELL_MANAGE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await page.waitForTimeout(5000);
-        await callMtop(context, page, itemId, records);
-        result = {
-          ...summarizeQueryResponse(records, itemId),
-          mode: 'api',
-          finalUrl: page.url(),
-          title: await page.title().catch(() => ''),
-          recordsCount: records.length,
-        };
+      if (result.loginRequired || (result.riskCheck && result.riskCheck.detected)) {
+        await sessionManager.close(store, { persist: false });
       }
-      if (result.ok) await saveAuthState(context, store);
       return result;
-    } finally {
-      await context.close().catch(() => {});
+    } catch (error) {
+      if (error.code === 'loginRequired') await sessionManager.close(store, { persist: false });
+      throw error;
     }
+  }
+
+  async function startLogin(store, payload) {
+    await sessionManager.close(store);
+    return runManualLogin(store, payload);
   }
 
   return {
     platform: 'tb',
     startLogin,
+    closeSession: (store) => sessionManager.close(store),
     actions: { 'query-test': createQueryTestAction(runQueryTest) },
   };
 }

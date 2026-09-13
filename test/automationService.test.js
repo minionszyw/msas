@@ -4,7 +4,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createAutomation } = require('../src/automationService');
+const { createBrowserSessionManager } = require('../src/browserSessionManager');
 const { createQueryTestAction } = require('../src/platforms/platformUtils');
+const {
+  createProductStatusAction,
+  createSkuPriceAction,
+  createSkuStockAction,
+} = require('../src/platforms/productActions');
 const { createPlatformAdapters } = require('../src/platforms/registry');
 const { sanitizePlatform, sanitizeStoreId } = require('../src/storeRepository');
 
@@ -152,4 +158,101 @@ test('login timeout is bounded and job failures do not expose stacks', async () 
   const failed = await waitForJob(automation, queued.id);
   assert.deepEqual(failed.error, { message: 'query failed', code: 'queryFailed' });
   assert.equal('stack' in failed.error, false);
+});
+
+test('mixed batches validate first, preserve order, and continue after operation failures', async () => {
+  const options = createTempOptions();
+  const sessionManager = createBrowserSessionManager();
+  let sessionsCreated = 0;
+  const createSession = async () => {
+    sessionsCreated += 1;
+    return { mode: 'headed', isUsable: () => true, close: async () => {} };
+  };
+  const calls = [];
+  const run = (action) => async (store, payload) => sessionManager.use(store, createSession, async () => {
+    calls.push([action, payload]);
+    if (action === 'update-sku-stock' && payload.productId === '60') {
+      const error = new Error('stock failed');
+      error.code = 'stockFailed';
+      throw error;
+    }
+    return { ok: true, action };
+  });
+  const adapter = {
+    platform: 'jd',
+    startLogin: async () => ({ ok: true }),
+    closeSession: async () => false,
+    actions: {
+      'update-product-status': createProductStatusAction(run('update-product-status')),
+      'update-sku-stock': createSkuStockAction(run('update-sku-stock')),
+      'update-sku-price': createSkuPriceAction(run('update-sku-price')),
+    },
+  };
+  const automation = createAutomation({ ...options, adapters: { jd: adapter }, sessionManager });
+  automation.ensureStore('jd', 'shop_a', 'A');
+  const operations = [
+    ...Array.from({ length: 50 }, (_, index) => ({
+      action: 'update-product-status',
+      payload: { productIds: [String(index + 1)], status: index % 2 ? 'online' : 'offline' },
+    })),
+    ...Array.from({ length: 30 }, (_, index) => ({
+      action: 'update-sku-stock',
+      payload: { productId: String(index + 51), updates: [{ skuId: String(index + 1001), stock: 88 }] },
+    })),
+    ...Array.from({ length: 20 }, (_, index) => ({
+      action: 'update-sku-price',
+      payload: { productId: String(index + 81), updates: [{ skuId: String(index + 2001), price: '9.90' }] },
+    })),
+  ];
+
+  const queued = automation.startBatch('shop_a', { operations });
+  assert.equal(queued.metadata.operationCount, 100);
+  assert.equal(queued.metadata.targetCount, 100);
+  const finished = await waitForJob(automation, queued.id);
+
+  assert.equal(finished.status, 'succeeded');
+  assert.equal(finished.result.ok, false);
+  assert.equal(finished.result.operationCount, 100);
+  assert.equal(finished.result.completedCount, 99);
+  assert.equal(finished.result.failedCount, 1);
+  assert.equal(finished.result.operations[59].error.code, 'stockFailed');
+  assert.equal(finished.result.operations[99].status, 'completed');
+  assert.deepEqual(calls.map(([action]) => action), operations.map(({ action }) => action));
+  assert.equal(sessionsCreated, 1);
+});
+
+test('invalid mixed batches perform no work and capabilities expose action schemas', () => {
+  const options = createTempOptions();
+  let calls = 0;
+  const action = createProductStatusAction(async () => {
+    calls += 1;
+    return { ok: true };
+  });
+  const adapter = {
+    platform: 'jd',
+    startLogin: async () => ({}),
+    closeSession: async () => false,
+    actions: { 'update-product-status': action },
+  };
+  const automation = createAutomation({ ...options, adapters: { jd: adapter } });
+  automation.ensureStore('jd', 'shop_a', 'A');
+
+  assert.throws(() => automation.startBatch('shop_a', { operations: [
+    { action: 'update-product-status', payload: { productIds: ['1'], status: 'online' } },
+    { action: 'query-products', payload: { productIds: ['2'] } },
+  ] }), (error) => error.code === 'actionNotBatchable');
+  assert.equal(calls, 0);
+  assert.throws(() => automation.startBatch('shop_a', { operations: [
+    { action: 'update-product-status', payload: { productIds: Array.from({ length: 100 }, (_, i) => String(i + 1)), status: 'online' } },
+    { action: 'update-product-status', payload: { productIds: ['101'], status: 'online' } },
+  ] }), (error) => error.code === 'tooManyBatchTargets');
+
+  const capabilities = automation.getCapabilities('jd');
+  assert.equal(capabilities.executable, true);
+  assert.equal(capabilities.actions[0].batchable, true);
+  assert.equal(capabilities.actions[0].inputSchema.type, 'object');
+  assert.equal(capabilities.batch.maxOperations, 100);
+  assert.equal(capabilities.batch.inputSchema.properties.operations.maxItems, 100);
+  assert.equal(capabilities.batch.inputSchema.properties.operations.items.oneOf[0].properties.action.const, 'update-product-status');
+  assert.equal(automation.getCapabilities('pdd').executable, false);
 });

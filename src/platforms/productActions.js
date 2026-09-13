@@ -1,7 +1,55 @@
 const { makeError } = require('../errors');
+const { z } = require('zod');
 
 const MAX_CODE_COUNT = 100;
 const MAX_PRICE = 999999999.99;
+const CODE_VALUE_SCHEMA = z.union([
+  z.string().regex(/^\d+$/),
+  z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+]);
+const CODE_LIST_TEXT_SCHEMA = z.string().regex(/^\s*\d+(?:[\s,]+\d+)*\s*$/);
+const CODE_LIST_SCHEMA = z.union([
+  CODE_LIST_TEXT_SCHEMA,
+  z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  z.array(CODE_VALUE_SCHEMA).max(MAX_CODE_COUNT),
+]);
+const REQUIRED_CODE_LIST_SCHEMA = z.union([
+  CODE_LIST_TEXT_SCHEMA,
+  z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  z.array(CODE_VALUE_SCHEMA).min(1).max(MAX_CODE_COUNT),
+]);
+const PRODUCT_QUERY_INPUT_SCHEMA = z.object({
+  productName: z.string().optional(),
+  skuIds: CODE_LIST_SCHEMA.optional(),
+  productIds: CODE_LIST_SCHEMA.optional(),
+  itemNum: z.union([z.string(), z.number().finite()]).optional(),
+  pageNum: z.union([z.string(), z.number()]).optional(),
+  pageSize: z.union([z.string(), z.number()]).optional(),
+}).passthrough().describe('At least one of productName, skuIds, productIds, or itemNum is required.');
+const PRODUCT_STATUS_INPUT_SCHEMA = z.object({
+  productIds: REQUIRED_CODE_LIST_SCHEMA,
+  status: z.enum(['online', 'offline']),
+}).passthrough();
+const STOCK_INPUT_SCHEMA = z.object({
+  productId: CODE_VALUE_SCHEMA,
+  updates: z.array(z.object({
+    skuId: CODE_VALUE_SCHEMA,
+    stock: z.union([
+      z.string().regex(/^\d+$/),
+      z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    ]),
+  }).passthrough()).min(1).max(MAX_CODE_COUNT),
+}).passthrough();
+const PRICE_INPUT_SCHEMA = z.object({
+  productId: CODE_VALUE_SCHEMA,
+  updates: z.array(z.object({
+    skuId: CODE_VALUE_SCHEMA,
+    price: z.union([
+      z.string().regex(/^\d+(?:\.\d{1,2})?$/),
+      z.number().positive().max(MAX_PRICE),
+    ]),
+  }).passthrough()).min(1).max(MAX_CODE_COUNT),
+}).passthrough();
 
 function invalid(message, code) {
   throw makeError(message, 400, code);
@@ -101,12 +149,26 @@ function validatePricePayload(payload = {}) {
   });
 }
 
-function createAction(validate, metadata, run) {
-  return { validate, metadata, run };
+function createAction(inputSchema, validate, metadata, run, options = {}) {
+  return {
+    inputSchema,
+    description: options.description,
+    validate: (payload) => {
+      const parsed = inputSchema.safeParse(payload);
+      if (!parsed.success) invalid(parsed.error.issues[0].message, 'invalidPayload');
+      return validate(parsed.data);
+    },
+    metadata,
+    run,
+    mutation: options.mutation === true,
+    batchable: options.batchable === true,
+    targetCount: options.targetCount || (() => 0),
+  };
 }
 
 function createProductQueryAction(run) {
   return createAction(
+    PRODUCT_QUERY_INPUT_SCHEMA,
     validateProductQueryPayload,
     ({ productName, skuIds, productIds, itemNum, pageNum, pageSize }) => ({
       productName,
@@ -117,30 +179,52 @@ function createProductQueryAction(run) {
       pageSize,
     }),
     run,
+    { description: 'Query products by name, SKU ID, product ID, or merchant item number.' },
   );
 }
 
 function createProductStatusAction(run) {
   return createAction(
+    PRODUCT_STATUS_INPUT_SCHEMA,
     validateProductStatusPayload,
     ({ productIds, status }) => ({ productIds, status }),
     run,
+    {
+      mutation: true,
+      batchable: true,
+      targetCount: ({ productIds }) => productIds.length,
+      description: 'Set products to the absolute online or offline state and verify by readback.',
+    },
   );
 }
 
 function createSkuStockAction(run) {
   return createAction(
+    STOCK_INPUT_SCHEMA,
     validateStockPayload,
     ({ productId, updates }) => ({ productId, skuIds: updates.map(({ skuId }) => skuId) }),
     run,
+    {
+      mutation: true,
+      batchable: true,
+      targetCount: ({ updates }) => updates.length,
+      description: 'Set absolute SKU stock values for one product and verify by readback.',
+    },
   );
 }
 
 function createSkuPriceAction(run) {
   return createAction(
+    PRICE_INPUT_SCHEMA,
     validatePricePayload,
     ({ productId, updates }) => ({ productId, skuIds: updates.map(({ skuId }) => skuId) }),
     run,
+    {
+      mutation: true,
+      batchable: true,
+      targetCount: ({ updates }) => updates.length,
+      description: 'Set absolute SKU prices for one product and verify by readback.',
+    },
   );
 }
 

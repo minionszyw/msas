@@ -81,7 +81,8 @@ test('tb query retries after token bootstrap with browser fetch and no DOM locat
   fs.mkdirSync(profileDir, { recursive: true });
   fs.writeFileSync(path.join(profileDir, 'auth-state.json'), JSON.stringify({ cookies: [], origins: [] }));
 
-  const result = await platform.actions['query-test'].run({ profileDir }, { itemId });
+  const store = { storeId: 'tb_a', profileDir };
+  const result = await platform.actions['query-test'].run(store, { itemId });
 
   assert.equal(result.ok, true);
   assert.equal(result.mode, 'api');
@@ -91,6 +92,8 @@ test('tb query retries after token bootstrap with browser fetch and no DOM locat
   assert.equal(requests.length, 3);
   assert.equal(requests[0].navigation, 'https://myseller.taobao.com/home.htm/SellManage/all');
   assert.equal(JSON.parse(JSON.parse(requests[2].requestData).jsonBody).filter.queryItemId, itemId);
+  assert.equal(closed, false);
+  assert.equal(await platform.closeSession(store), true);
   assert.equal(closed, true);
 });
 

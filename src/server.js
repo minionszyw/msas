@@ -17,6 +17,7 @@ function createApp(options = {}) {
     maxCompletedJobs: process.env.MAX_COMPLETED_JOBS,
   });
   const app = express();
+  app.locals.automation = automation;
   app.use(express.json({ limit: '1mb' }));
 
   const platformSchema = z.enum(SUPPORTED_PLATFORMS);
@@ -27,6 +28,14 @@ function createApp(options = {}) {
   });
 
   app.get('/health', (_req, res) => res.json({ ok: true, headed, platforms: SUPPORTED_PLATFORMS }));
+
+  app.get('/platforms/:platform/capabilities', (req, res, next) => {
+    try {
+      res.json({ capabilities: automation.getCapabilities(platformSchema.parse(req.params.platform)) });
+    } catch (error) {
+      next(error);
+    }
+  });
 
   app.get('/stores', (req, res, next) => {
     try {
@@ -62,9 +71,33 @@ function createApp(options = {}) {
     }
   });
 
+  app.post('/stores/:storeId/actions/batch/start', (req, res, next) => {
+    try {
+      res.status(202).json({ job: automation.startBatch(req.params.storeId, req.body || {}) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post('/stores/:storeId/actions/:action/start', (req, res, next) => {
     try {
       res.status(202).json({ job: automation.startAction(req.params.storeId, req.params.action, req.body || {}) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/stores/:storeId/session', (req, res, next) => {
+    try {
+      res.json({ session: automation.getSession(req.params.storeId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete('/stores/:storeId/session', (req, res, next) => {
+    try {
+      res.status(202).json({ job: automation.startSessionClose(req.params.storeId) });
     } catch (error) {
       next(error);
     }
@@ -92,10 +125,20 @@ if (require.main === module) {
   const port = Number(process.env.PORT || DEFAULT_PORT);
   const host = process.env.HOST || DEFAULT_HOST;
   const headed = process.env.HEADLESS !== '1';
-  createApp({ headed }).listen(port, host, () => {
+  const app = createApp({ headed });
+  const server = app.listen(port, host, () => {
     console.log(`multi-platform-store-api listening on http://${host}:${port}`);
     console.log(`Browser mode: ${headed ? 'headed' : 'headless'} Playwright-Stealth, one persistent profile per store.`);
   });
+  let closing = false;
+  const shutdown = async () => {
+    if (closing) return;
+    closing = true;
+    await app.locals.automation.close();
+    server.close(() => process.exit(0));
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 module.exports = { createApp };

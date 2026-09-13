@@ -2,30 +2,31 @@
 
 ## Architecture
 
-This CommonJS Node.js service exposes one Express gateway. `src/server.js` owns routes and HTTP validation. `src/automationService.js` composes store persistence, job scheduling, and adapter dispatch. `src/storeRepository.js` owns portable store records and profile-path derivation; `src/jobManager.js` owns job state, retention, and per-store locks. Keep browser and platform code in `src/platforms/`. JD and Taobao are executable; PDD is registration-only.
+This Node.js service has one Express gateway. `src/automationService.js` composes persistence, jobs, sessions, and adapters. `src/jobManager.js` serializes each store; `src/browserSessionManager.js` reuses its context for ten idle minutes. `src/batchService.js` runs mixed mutations. Platform code belongs in `src/platforms/`. JD and Taobao are executable; PDD is registration-only.
 
 ## Engineering Rules
 
 - Keep one public gateway and one platform registry. Never duplicate platform allowlists.
 - Apply DRY to platform-neutral validation, login verification, persistence, and orchestration.
+- Reuse one context per store across serial jobs. Do not add adapter-local session caches or bypass the store lock.
 - Prefer authenticated platform APIs. Use DOM interaction only when an API cannot perform the action, and document the reason.
 - Make mutations idempotent with absolute target values. Read before writing, validate resource ownership, and read back after writing.
-- Follow the Boy Scout Rule while keeping changes scoped. Remove dead helpers, stale compatibility branches, logs, and temporary artifacts.
+- Follow the Boy Scout Rule. Remove dead helpers, stale branches, logs, and temporary artifacts.
 - Keep secrets and machine details internal. Never return or log cookies, tokens, profile paths, auth-state paths, or server stacks.
 
 ## Required Workflow
 
-Every executable platform supports: create store, manual login, then `query-test`. Login uses `createManualLoginFlow()` and is headed by default. After login, close the context and use the same `profiles/<storeId>` in a forced-headless context to verify reuse. `HEADLESS=1` changes the normal launch default only; reuse verification remains headless. Query tests accept a numeric-string `itemId`.
+Every executable platform supports: create store, manual login, then `query-test`. Login uses `createManualLoginFlow()` and is headed by default. Close any cached session before login; then close the login context and verify the same profile in a forced-headless context. Business actions create the configured-mode session lazily and reuse it. `HEADLESS=1` affects business and login launch defaults only; reuse verification remains headless.
 
 ## Extending an Adapter
 
-Register the platform once in `src/platforms/registry.js`. Implement `platform`, `startLogin`, and an `actions` map; every action provides `validate`, `metadata`, and `run`. Reuse common action names and validators where semantics match. Use `createQueryTestAction()` for the common query contract. Keep URLs, selectors, signing, response parsing, authentication checks, and risk detection in a platform-specific protocol module. Add concise research under `docs/platforms/<platform>/`.
+Register the platform once in `src/platforms/registry.js`. Implement `platform`, `startLogin`, `closeSession`, and an `actions` map. Actions provide `inputSchema`, `validate`, `metadata`, `run`, and mutation/batch metadata. Generate capability JSON Schema from the same Zod input schema used for validation. Reuse common action factories where semantics match. Keep URLs, signing, parsing, authentication, and risk detection in a platform protocol module. Document research under `docs/platforms/<platform>/`.
 
 ## Commands, Style, and Tests
 
 Use `npm ci`, `npm test`, and `npm start`; there is no build step. Use two-space indentation, semicolons, single quotes, trailing commas in multiline structures, CommonJS modules, `camelCase`, and `UPPER_SNAKE_CASE`. No formatter or linter is configured.
 
-Use `node:test` and `node:assert/strict` in `test/*.test.js`. Mock browser contexts and APIs. Cover validation, login failure, post-close reuse, auth expiry, risk responses, locking, migration, and cleanup. Run `npm test` and syntax checks before committing.
+Use `node:test` and `node:assert/strict` in `test/*.test.js`. Mock browsers and APIs. Cover validation, login reuse, auth expiry, risk, locking, session lifecycle, ordered 100-operation batches, and partial failures. Run `npm test` and syntax checks before committing.
 
 ## Git and Security
 

@@ -30,6 +30,10 @@ function createHarness(options = {}) {
     secondStock: 10,
     price: 5.2,
     calls: [],
+    launches: 0,
+    closes: 0,
+    storageSaves: 0,
+    queryAttempts: 0,
   };
   const page = {
     goto: async () => {},
@@ -39,17 +43,28 @@ function createHarness(options = {}) {
   const context = {
     pages: () => [page],
     newPage: async () => page,
-    storageState: async () => ({ cookies: [], origins: [] }),
-    close: async () => {},
+    storageState: async () => {
+      state.storageSaves += 1;
+      return { cookies: [], origins: [] };
+    },
+    close: async () => { state.closes += 1; },
   };
   const client = {
     ready: async () => {},
-    queryProducts: async () => ({
-      data: [rawProduct(state.status)],
-      pageNo: 1,
-      pageSize: 10,
-      totalCount: 1,
-    }),
+    queryProducts: async () => {
+      state.queryAttempts += 1;
+      if (options.loginRequiredOnce && state.queryAttempts === 1) {
+        const error = new Error('login expired');
+        error.code = 'loginRequired';
+        throw error;
+      }
+      return {
+        data: [rawProduct(state.status)],
+        pageNo: 1,
+        pageSize: 10,
+        totalCount: 1,
+      };
+    },
     getStocks: async () => [
       { skuId: Number(SKU_ID), skuName: '规格', outerId: 'X', stock: state.stock, totalStock: state.stock },
       ...(options.secondSku ? [{ skuId: 201, skuName: '规格2', outerId: 'Y', stock: state.secondStock, totalStock: state.secondStock }] : []),
@@ -72,13 +87,46 @@ function createHarness(options = {}) {
     },
   };
   const platform = createJdPlatform({
-    launchPersistentContext: async () => context,
+    launchPersistentContext: async () => {
+      state.launches += 1;
+      return context;
+    },
     createClient: () => client,
     readbackDelayMs: 0,
     headed: false,
   });
   return { platform, state };
 }
+
+test('JD actions reuse one store browser session until explicitly closed', async () => {
+  const { platform, state } = createHarness();
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jd-session-'));
+  const store = { storeId: 'shop_a', profileDir };
+  const action = platform.actions['query-products'];
+  const payload = action.validate({ productIds: PRODUCT_ID });
+
+  await action.run(store, payload);
+  await action.run(store, payload);
+
+  assert.equal(state.launches, 1);
+  assert.equal(state.closes, 0);
+  assert.equal(await platform.closeSession(store), true);
+  assert.equal(state.closes, 1);
+});
+
+test('JD login expiry discards the session without persisting stale state and retries once', async () => {
+  const { platform, state } = createHarness({ loginRequiredOnce: true });
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jd-auth-retry-'));
+  fs.writeFileSync(path.join(profileDir, 'auth-state.json'), JSON.stringify({ cookies: [], origins: [] }));
+  const store = { storeId: 'shop_a', profileDir };
+  const action = platform.actions['query-products'];
+  const result = await action.run(store, action.validate({ productIds: PRODUCT_ID }));
+
+  assert.equal(result.ok, true);
+  assert.equal(state.launches, 2);
+  assert.equal(state.closes, 1);
+  assert.equal(state.storageSaves, 1);
+});
 
 async function runAction(platform, name, payload) {
   const action = platform.actions[name];

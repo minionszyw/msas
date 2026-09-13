@@ -86,6 +86,33 @@ curl -X POST http://127.0.0.1:8787/stores/shop_jd/actions/update-sku-price/start
 
 查询还接受 `productName`、`skuIds` 和 `itemNum`。写操作会先读取当前值，跳过已达到目标值的数据，再在写入后通过 API 回读；结果中的 `verified` 表示目标值已经生效。
 
+### 5. 能力发现、混合批次与会话
+
+运行时 Agent 可先读取平台支持的动作及其 JSON Schema：
+
+```bash
+curl http://127.0.0.1:8787/platforms/jd/capabilities
+```
+
+京东支持一个 job 顺序执行混合写操作。批次最多 100 个 operation 且合计最多 100 个目标资源；调用方负责排序和去重。单项失败不会中止后续项，最终结果按输入索引返回。
+
+```bash
+curl -X POST http://127.0.0.1:8787/stores/shop_jd/actions/batch/start \
+  -H 'content-type: application/json' \
+  -d '{"operations":[
+    {"action":"update-product-status","payload":{"productIds":["<商品编码>"],"status":"online"}},
+    {"action":"update-sku-stock","payload":{"productId":"<商品编码>","updates":[{"skuId":"<SKU编码>","stock":88}]}},
+    {"action":"update-sku-price","payload":{"productId":"<商品编码>","updates":[{"skuId":"<SKU编码>","price":"19.90"}]}}
+  ]}'
+```
+
+同店铺任务串行复用一个浏览器会话，不同店铺可并行。会话空闲十分钟后自动关闭；也可查询或手动关闭：
+
+```bash
+curl http://127.0.0.1:8787/stores/shop_jd/session
+curl -X DELETE http://127.0.0.1:8787/stores/shop_jd/session
+```
+
 ## 环境变量
 
 - `PORT`：端口，默认 `8787`
@@ -107,5 +134,7 @@ curl -X POST http://127.0.0.1:8787/stores/shop_jd/actions/update-sku-price/start
 - `src/automationService.js`：组合店铺、任务与平台动作的业务编排。
 - `src/storeRepository.js`：店铺持久化和旧数据迁移。
 - `src/jobManager.js`：任务生命周期、同店铺串行锁和完成任务清理。
+- `src/browserSessionManager.js`：同店铺浏览器会话复用、空闲回收和统一关闭。
+- `src/batchService.js`：混合写任务的预校验、顺序执行和逐项结果汇总。
 - `src/platforms/`：平台注册表、共享登录流程、公共动作校验和平台 adapter；平台 API 协议与业务编排相互隔离。
 - `docs/platforms/`：平台专属验证资料。

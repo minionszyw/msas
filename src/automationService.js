@@ -1,6 +1,9 @@
 const path = require('path');
+const { batchMetadata, normalizeBatch, runBatch } = require('./batchService');
+const { createBrowserSessionManager, DEFAULT_IDLE_TIMEOUT_MS } = require('./browserSessionManager');
 const { makeError } = require('./errors');
 const { createJobManager } = require('./jobManager');
+const { platformCapabilities } = require('./platformCapabilities');
 const { createPlatformAdapters } = require('./platforms/registry');
 const {
   createStoreRepository,
@@ -25,9 +28,12 @@ function createAutomation(options = {}) {
   const profilesDir = path.resolve(options.profilesDir || path.join(rootDir, 'profiles'));
   const storesFile = path.resolve(options.storesFile || path.join(rootDir, 'stores.json'));
   const maxCompletedJobs = normalizePositiveInteger(options.maxCompletedJobs, 1000, 'maxCompletedJobs');
+  const sessionManager = options.sessionManager || createBrowserSessionManager({
+    idleTimeoutMs: options.sessionIdleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+  });
   const adapters = options.adapters
     ? new Map(Object.entries(options.adapters))
-    : createPlatformAdapters({ chromePath: options.chromePath, headed: options.headed });
+    : createPlatformAdapters({ chromePath: options.chromePath, headed: options.headed, sessionManager });
   const storeRepository = createStoreRepository({ profilesDir, storesFile });
   const jobManager = createJobManager({ maxCompletedJobs });
 
@@ -85,12 +91,59 @@ function createAutomation(options = {}) {
     ));
   }
 
+  function getCapabilities(platform) {
+    sanitizePlatform(platform);
+    return platformCapabilities(
+      platform,
+      adapters.get(platform),
+      options.sessionIdleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+    );
+  }
+
+  function startBatch(storeId, payload = {}) {
+    const store = storeRepository.getStore(storeId);
+    const adapter = getExecutableAdapter(store.platform);
+    const batch = normalizeBatch(adapter, payload);
+    return jobManager.enqueue({
+      type: 'batch',
+      platform: store.platform,
+      storeId,
+      metadata: batchMetadata(batch),
+    }, () => runBatch(batch, store));
+  }
+
+  function getSession(storeId) {
+    const store = storeRepository.getStore(storeId);
+    getExecutableAdapter(store.platform);
+    return { storeId, platform: store.platform, ...sessionManager.status(store) };
+  }
+
+  function startSessionClose(storeId) {
+    const store = storeRepository.getStore(storeId);
+    const adapter = getExecutableAdapter(store.platform);
+    return jobManager.enqueue({
+      type: 'session-close',
+      platform: store.platform,
+      storeId,
+      metadata: {},
+    }, async () => ({ ok: true, closed: await adapter.closeSession(store) }));
+  }
+
+  async function close() {
+    await sessionManager.closeAll();
+  }
+
   return {
     ensureStore,
     getStore,
     listStores,
     startLogin,
     startAction,
+    startBatch,
+    getCapabilities,
+    getSession,
+    startSessionClose,
+    close,
     getJob: jobManager.getJob,
   };
 }

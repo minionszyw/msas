@@ -22,6 +22,7 @@ test('gateway keeps public routes while hiding internal profile paths and valida
   const adapter = {
     platform: 'jd',
     startLogin: async () => ({ ok: true }),
+    closeSession: async () => false,
     actions: {},
   };
   const automation = createAutomation({ rootDir, adapters: { jd: adapter } });
@@ -49,5 +50,27 @@ test('gateway keeps public routes while hiding internal profile paths and valida
     const healthResponse = await fetch(`${baseUrl}/health`);
     const health = await healthResponse.json();
     assert.deepEqual(health.platforms, ['jd', 'tb', 'pdd']);
+
+    const capabilitiesResponse = await fetch(`${baseUrl}/platforms/jd/capabilities`);
+    const capabilities = await capabilitiesResponse.json();
+    assert.equal(capabilitiesResponse.status, 200);
+    assert.equal(capabilities.capabilities.executable, true);
+
+    const sessionResponse = await fetch(`${baseUrl}/stores/shop_a/session`);
+    const session = await sessionResponse.json();
+    assert.equal(session.session.state, 'closed');
+    assert.equal(session.session.storeId, 'shop_a');
+
+    const closeResponse = await fetch(`${baseUrl}/stores/shop_a/session`, { method: 'DELETE' });
+    assert.equal(closeResponse.status, 202);
+
+    const invalidBatchResponse = await fetch(`${baseUrl}/stores/shop_a/actions/batch/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ operations: [] }),
+    });
+    const invalidBatch = await invalidBatchResponse.json();
+    assert.equal(invalidBatchResponse.status, 400);
+    assert.equal(invalidBatch.error.code, 'invalidBatch');
   });
 });

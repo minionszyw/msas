@@ -1,4 +1,5 @@
 const { makeError } = require('../errors');
+const { createBrowserSessionManager } = require('../browserSessionManager');
 const { createLaunchContext } = require('./browserContext');
 const { createJdSffClient } = require('./jdSff');
 const { createManualLoginFlow } = require('./loginFlow');
@@ -73,9 +74,10 @@ function normalizePrice(price = {}) {
 
 function createJdPlatform(options = {}) {
   const launchContext = createLaunchContext(options);
+  const sessionManager = options.sessionManager || createBrowserSessionManager();
   const createClient = options.createClient || createJdSffClient;
   const readbackDelayMs = options.readbackDelayMs ?? READBACK_DELAY_MS;
-  const startLogin = createManualLoginFlow({
+  const runManualLogin = createManualLoginFlow({
     launchContext,
     loginUrl: LOGIN_URL,
     homeUrl: HOME_URL,
@@ -83,41 +85,74 @@ function createJdPlatform(options = {}) {
     restoreState: restoreAuthState,
   });
 
-  async function withClient(store, run) {
+  async function createSession(store, restoreFirst = false) {
     const context = await launchContext(store);
     try {
       const page = context.pages()[0] || await context.newPage();
-      let restored = false;
-
-      async function openClient() {
+      if (restoreFirst) await restoreAuthState(context, store);
+      await page.goto(WARE_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      if (/passport\.shop\.jd\.com/.test(page.url()) && await restoreAuthState(context, store)) {
         await page.goto(WARE_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        if (/passport\.shop\.jd\.com/.test(page.url()) && !restored && await restoreAuthState(context, store)) {
-          restored = true;
-          await page.goto(WARE_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        }
-        if (/passport\.shop\.jd\.com/.test(page.url())) {
-          throw makeError('JD login state expired; run login/start again', 401, 'loginRequired');
-        }
-        const client = createClient(page);
-        await client.ready();
-        return client;
       }
-
-      let client = await openClient();
-      let result;
-      try {
-        result = await run(client, page);
-      } catch (error) {
-        if (error.code !== 'loginRequired' || restored || !await restoreAuthState(context, store)) throw error;
-        restored = true;
-        client = await openClient();
-        result = await run(client, page);
+      if (/passport\.shop\.jd\.com/.test(page.url())) {
+        throw makeError('JD login state expired; run login/start again', 401, 'loginRequired');
       }
-      await saveAuthState(context, store);
-      return result;
-    } finally {
+      const client = createClient(page);
+      await client.ready();
+      return {
+        client,
+        context,
+        page,
+        mode: options.headed === false ? 'headless' : 'headed',
+        isUsable: () => typeof page.isClosed !== 'function' || !page.isClosed(),
+        ensureReady: async () => {
+          if (!/^https:\/\/wares-jdm\.jd\.com\//.test(page.url())) {
+            await page.goto(WARE_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          }
+          if (/passport\.shop\.jd\.com/.test(page.url())) {
+            throw makeError('JD login state expired; run login/start again', 401, 'loginRequired');
+          }
+          await client.ready();
+        },
+        close: async ({ persist = true } = {}) => {
+          if (persist) await saveAuthState(context, store).catch(() => {});
+          await context.close().catch(() => {});
+        },
+      };
+    } catch (error) {
       await context.close().catch(() => {});
+      throw error;
     }
+  }
+
+  async function withClient(store, run, retry = true, restoreFirst = false) {
+    try {
+      return await sessionManager.use(store, (target) => createSession(target, restoreFirst), async ({
+        client,
+        context,
+        ensureReady,
+        page,
+      }) => {
+        await ensureReady();
+        const result = await run(client, page);
+        await saveAuthState(context, store);
+        return result;
+      });
+    } catch (error) {
+      if (error.code === 'loginRequired' && retry) {
+        await sessionManager.close(store, { persist: false });
+        return withClient(store, run, false, true);
+      }
+      if (error.code === 'loginRequired' || error.code === 'jdRiskBlocked') {
+        await sessionManager.close(store, { persist: false });
+      }
+      throw error;
+    }
+  }
+
+  async function startLogin(store, payload) {
+    await sessionManager.close(store);
+    return runManualLogin(store, payload);
   }
 
   async function queryExactProducts(client, productIds) {
@@ -307,6 +342,7 @@ function createJdPlatform(options = {}) {
   return {
     platform: 'jd',
     startLogin,
+    closeSession: (store) => sessionManager.close(store),
     actions: {
       'query-test': createQueryTestAction(runQueryTest),
       'query-products': createProductQueryAction(runProductQuery),
