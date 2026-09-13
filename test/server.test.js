@@ -51,11 +51,6 @@ test('gateway keeps public routes while hiding internal profile paths and valida
     const health = await healthResponse.json();
     assert.deepEqual(health.platforms, ['jd', 'tb', 'pdd']);
 
-    const capabilitiesResponse = await fetch(`${baseUrl}/platforms/jd/capabilities`);
-    const capabilities = await capabilitiesResponse.json();
-    assert.equal(capabilitiesResponse.status, 200);
-    assert.equal(capabilities.capabilities.executable, true);
-
     const sessionResponse = await fetch(`${baseUrl}/stores/shop_a/session`);
     const session = await sessionResponse.json();
     assert.equal(session.session.state, 'closed');

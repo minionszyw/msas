@@ -221,7 +221,7 @@ test('mixed batches validate first, preserve order, and continue after operation
   assert.equal(sessionsCreated, 1);
 });
 
-test('invalid mixed batches perform no work and capabilities expose action schemas', () => {
+test('invalid mixed batches perform no work', () => {
   const options = createTempOptions();
   let calls = 0;
   const action = createProductStatusAction(async () => {
@@ -246,13 +246,4 @@ test('invalid mixed batches perform no work and capabilities expose action schem
     { action: 'update-product-status', payload: { productIds: Array.from({ length: 100 }, (_, i) => String(i + 1)), status: 'online' } },
     { action: 'update-product-status', payload: { productIds: ['101'], status: 'online' } },
   ] }), (error) => error.code === 'tooManyBatchTargets');
-
-  const capabilities = automation.getCapabilities('jd');
-  assert.equal(capabilities.executable, true);
-  assert.equal(capabilities.actions[0].batchable, true);
-  assert.equal(capabilities.actions[0].inputSchema.type, 'object');
-  assert.equal(capabilities.batch.maxOperations, 100);
-  assert.equal(capabilities.batch.inputSchema.properties.operations.maxItems, 100);
-  assert.equal(capabilities.batch.inputSchema.properties.operations.items.oneOf[0].properties.action.const, 'update-product-status');
-  assert.equal(automation.getCapabilities('pdd').executable, false);
 });

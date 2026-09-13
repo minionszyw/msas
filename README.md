@@ -86,13 +86,9 @@ curl -X POST http://127.0.0.1:8787/stores/shop_jd/actions/update-sku-price/start
 
 查询还接受 `productName`、`skuIds` 和 `itemNum`。写操作会先读取当前值，跳过已达到目标值的数据，再在写入后通过 API 回读；结果中的 `verified` 表示目标值已经生效。
 
-### 5. 能力发现、混合批次与会话
+### 5. 混合批次与会话
 
-运行时 Agent 可先读取平台支持的动作及其 JSON Schema：
-
-```bash
-curl http://127.0.0.1:8787/platforms/jd/capabilities
-```
+仓库级技能 `.agents/skills/msas-store-automation/SKILL.md` 向 Codex 提供可自动发现的操作契约，无需先请求运行时能力接口。
 
 京东支持一个 job 顺序执行混合写操作。批次最多 100 个 operation 且合计最多 100 个目标资源；调用方负责排序和去重。单项失败不会中止后续项，最终结果按输入索引返回。
 

@@ -2,7 +2,7 @@
 
 ## Architecture
 
-This Node.js service has one Express gateway. `src/automationService.js` composes persistence, jobs, sessions, and adapters. `src/jobManager.js` serializes each store; `src/browserSessionManager.js` reuses its context for ten idle minutes. `src/batchService.js` runs mixed mutations. Platform code belongs in `src/platforms/`. JD and Taobao are executable; PDD is registration-only.
+This Node.js service has one Express gateway. `src/automationService.js` composes persistence, jobs, sessions, and adapters. `src/jobManager.js` serializes each store; `src/browserSessionManager.js` reuses its context for ten idle minutes. `src/batchService.js` runs mixed mutations. JD and Taobao are executable; PDD is registration-only.
 
 ## Engineering Rules
 
@@ -11,6 +11,7 @@ This Node.js service has one Express gateway. `src/automationService.js` compose
 - Reuse one context per store across serial jobs. Do not add adapter-local session caches or bypass the store lock.
 - Prefer authenticated platform APIs. Use DOM interaction only when an API cannot perform the action, and document the reason.
 - Make mutations idempotent with absolute target values. Read before writing, validate resource ownership, and read back after writing.
+- Keep `.agents/skills/msas-store-automation/SKILL.md` aligned with public gateway actions and payloads.
 - Follow the Boy Scout Rule. Remove dead helpers, stale branches, logs, and temporary artifacts.
 - Keep secrets and machine details internal. Never return or log cookies, tokens, profile paths, auth-state paths, or server stacks.
 
@@ -20,7 +21,7 @@ Every executable platform supports: create store, manual login, then `query-test
 
 ## Extending an Adapter
 
-Register the platform once in `src/platforms/registry.js`. Implement `platform`, `startLogin`, `closeSession`, and an `actions` map. Actions provide `inputSchema`, `validate`, `metadata`, `run`, and mutation/batch metadata. Generate capability JSON Schema from the same Zod input schema used for validation. Reuse common action factories where semantics match. Keep URLs, signing, parsing, authentication, and risk detection in a platform protocol module. Document research under `docs/platforms/<platform>/`.
+Register each platform once in `src/platforms/registry.js`. Implement `platform`, `startLogin`, `closeSession`, and `actions`. Actions provide `validate`, `metadata`, and `run`; batchable actions also provide `targetCount`. Reuse common action factories where semantics match. Keep URLs, signing, parsing, authentication, and risk detection in a platform protocol module. Update the project skill when public actions change; keep research under `docs/platforms/<platform>/`.
 
 ## Commands, Style, and Tests
 

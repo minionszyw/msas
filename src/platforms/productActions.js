@@ -151,8 +151,6 @@ function validatePricePayload(payload = {}) {
 
 function createAction(inputSchema, validate, metadata, run, options = {}) {
   return {
-    inputSchema,
-    description: options.description,
     validate: (payload) => {
       const parsed = inputSchema.safeParse(payload);
       if (!parsed.success) invalid(parsed.error.issues[0].message, 'invalidPayload');
@@ -160,7 +158,6 @@ function createAction(inputSchema, validate, metadata, run, options = {}) {
     },
     metadata,
     run,
-    mutation: options.mutation === true,
     batchable: options.batchable === true,
     targetCount: options.targetCount || (() => 0),
   };
@@ -179,7 +176,6 @@ function createProductQueryAction(run) {
       pageSize,
     }),
     run,
-    { description: 'Query products by name, SKU ID, product ID, or merchant item number.' },
   );
 }
 
@@ -190,10 +186,8 @@ function createProductStatusAction(run) {
     ({ productIds, status }) => ({ productIds, status }),
     run,
     {
-      mutation: true,
       batchable: true,
       targetCount: ({ productIds }) => productIds.length,
-      description: 'Set products to the absolute online or offline state and verify by readback.',
     },
   );
 }
@@ -205,10 +199,8 @@ function createSkuStockAction(run) {
     ({ productId, updates }) => ({ productId, skuIds: updates.map(({ skuId }) => skuId) }),
     run,
     {
-      mutation: true,
       batchable: true,
       targetCount: ({ updates }) => updates.length,
-      description: 'Set absolute SKU stock values for one product and verify by readback.',
     },
   );
 }
@@ -220,10 +212,8 @@ function createSkuPriceAction(run) {
     ({ productId, updates }) => ({ productId, skuIds: updates.map(({ skuId }) => skuId) }),
     run,
     {
-      mutation: true,
       batchable: true,
       targetCount: ({ updates }) => updates.length,
-      description: 'Set absolute SKU prices for one product and verify by readback.',
     },
   );
 }

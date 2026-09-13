@@ -28,13 +28,9 @@ function validateItemIdPayload(payload = {}) {
 
 function createQueryTestAction(run) {
   return {
-    inputSchema: ITEM_ID_INPUT_SCHEMA,
-    description: 'Query one numeric item ID and report authentication or risk failures.',
     validate: validateItemIdPayload,
     metadata: ({ itemId }) => ({ itemId }),
     batchable: false,
-    mutation: false,
-    targetCount: () => 0,
     run,
   };
 }

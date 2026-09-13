@@ -29,14 +29,6 @@ function createApp(options = {}) {
 
   app.get('/health', (_req, res) => res.json({ ok: true, headed, platforms: SUPPORTED_PLATFORMS }));
 
-  app.get('/platforms/:platform/capabilities', (req, res, next) => {
-    try {
-      res.json({ capabilities: automation.getCapabilities(platformSchema.parse(req.params.platform)) });
-    } catch (error) {
-      next(error);
-    }
-  });
-
   app.get('/stores', (req, res, next) => {
     try {
       const platform = req.query.platform ? platformSchema.parse(req.query.platform) : undefined;

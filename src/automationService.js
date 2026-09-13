@@ -3,7 +3,6 @@ const { batchMetadata, normalizeBatch, runBatch } = require('./batchService');
 const { createBrowserSessionManager, DEFAULT_IDLE_TIMEOUT_MS } = require('./browserSessionManager');
 const { makeError } = require('./errors');
 const { createJobManager } = require('./jobManager');
-const { platformCapabilities } = require('./platformCapabilities');
 const { createPlatformAdapters } = require('./platforms/registry');
 const {
   createStoreRepository,
@@ -91,15 +90,6 @@ function createAutomation(options = {}) {
     ));
   }
 
-  function getCapabilities(platform) {
-    sanitizePlatform(platform);
-    return platformCapabilities(
-      platform,
-      adapters.get(platform),
-      options.sessionIdleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
-    );
-  }
-
   function startBatch(storeId, payload = {}) {
     const store = storeRepository.getStore(storeId);
     const adapter = getExecutableAdapter(store.platform);
@@ -140,7 +130,6 @@ function createAutomation(options = {}) {
     startLogin,
     startAction,
     startBatch,
-    getCapabilities,
     getSession,
     startSessionClose,
     close,
